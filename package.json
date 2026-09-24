@@ -1,0 +1,42 @@
+{
+  "name": "opencode-agentmesh",
+  "version": "0.1.1",
+  "description": "Peer-to-peer messaging between opencode agents running in different sessions, directories and servers",
+  "keywords": ["opencode", "opencode-plugin", "agent", "multi-agent", "mesh"],
+  "license": "MIT",
+  "author": "Vdrsl",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vdrsl/opencode-agentmesh-private.git"
+  },
+  "homepage": "https://github.com/Vdrsl/opencode-agentmesh-private#readme",
+  "bugs": {
+    "url": "https://github.com/Vdrsl/opencode-agentmesh-private/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types \"test/*.test.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.17.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
