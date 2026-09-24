@@ -69,6 +69,7 @@ export const AgentMesh: Plugin = async (input, options) => {
         systemPrompt({
           ...(sessionID && mesh.selfId(sessionID) ? { selfId: mesh.selfId(sessionID)! } : {}),
           maxTextLength: config.maxTextLength,
+          maxReplyDepth: config.maxReplyDepth,
         }),
       )
     },

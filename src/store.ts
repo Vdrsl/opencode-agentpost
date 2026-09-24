@@ -11,6 +11,8 @@ import { randomBytes } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import type { ClaimMeta } from "./types.ts"
+
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ENOENT"
 }
@@ -91,15 +93,28 @@ export async function touch(file: string): Promise<boolean> {
  * Claim a file by renaming it. Exactly one caller can win; everyone else sees
  * ENOENT. Returns the new path, or `undefined` if the file was already taken.
  */
-export async function claimFile(file: string, suffix: string): Promise<string | undefined> {
+export async function claimFile(
+  file: string,
+  suffix: string,
+  claim: ClaimMeta,
+): Promise<string | undefined> {
   const claimed = `${file}${suffix}`
   try {
     await fs.rename(file, claimed)
-    return claimed
   } catch (error) {
     if (isMissing(error)) return undefined
     throw error
   }
+  try {
+    const raw = await readJson<Record<string, unknown>>(claimed)
+    if (raw) {
+      raw["_claim"] = claim
+      await writeJsonAtomic(claimed, raw)
+    }
+  } catch {
+    // A claimed file without metadata is recovered as an expired lease.
+  }
+  return claimed
 }
 
 /**

@@ -60,18 +60,18 @@ you send your first message, and gets three tools:
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `agentmesh_register` | Publish this agent's id, description, and metadata so peers can find it. Called automatically; call it again to update your description or change your id. |
 | `agentmesh_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, directory.                                           |
-| `agentmesh_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `reply_to` with the incoming `msg` id for correlated replies. |
+| `agentmesh_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `in_reply_to` with the incoming `msg` id for correlated replies (`reply_to` remains a legacy alias). |
 
-A message sent to a peer that's offline just waits — the recipient's own
-plugin instance watches its inbox and delivers the message the moment it
-comes back online. `agentmesh_send` returns `accepted` after the recipient's
-OpenCode returns HTTP 204; that does not mean the peer read the message or
-answered. `queued` means the durable inbox write exists but no acknowledgement
-arrived before `ackWaitMs`; `failed` means the recipient reported an injection
-error. Sending waits only for the acknowledgement window.
+A message sent to a peer that's offline stays in the durable inbox. The recipient's
+plugin watches it, claims it with a lease, retries failed injection up to
+`maxDeliveryAttempts`, and moves exhausted messages to `dead/`. `agentmesh_send`
+returns `accepted` after the recipient's OpenCode returns HTTP 204; that does not
+mean the peer read the message or answered. `queued` means the durable inbox write
+exists but no acknowledgement arrived before `ackWaitMs`; `failed` means the
+recipient reported an injection error.
 
 ```
-[agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | reply-to: agm_00…
+[agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…
 review src/auth.ts please
 (end of agentmesh message; to reply, call agentmesh_send with to "planner")
 ```
@@ -86,7 +86,10 @@ Every agent's plugin instance coordinates through one shared home directory
 
 ```
 <home>/agents/<id>.json         one record per agent, written only by its owner
-<home>/inbox/<id>/<msgid>.json  queued messages for <id>, written by senders
+<home>/inbox/<id>/<msgid>.json  pending messages for <id>, written by senders
+<home>/inbox/<id>/<msgid>.json.taken  active lease claim, with _claim metadata
+<home>/inbox/<id>/dead/<msgid>.json  messages that exhausted delivery attempts
+<home>/inbox/<id>/quarantine/<msgid>.invalid  critical malformed messages
 <home>/acks/<msgid>.json        delivery confirmation, written by the recipient
 ```
 
@@ -115,6 +118,12 @@ variable that overrides it (env > plugin options > defaults):
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
 | `pollIntervalMs`      | `AGENTMESH_POLL_INTERVAL_MS`      | `2000`                                                                     | Inbox poll interval, as a fallback for missed filesystem events.                     |
 | `maxTextLength`       | `AGENTMESH_MAX_TEXT_LENGTH`       | `8000`                                                                     | Maximum message body length, in characters.                                          |
+| `leaseDurationMs`     | `AGENTMESH_LEASE_DURATION_MS`     | `60000`                                                                    | Claim lease duration before recovery may retry a message.                            |
+| `maxDeliveryAttempts` | `AGENTMESH_MAX_DELIVERY_ATTEMPTS` | `3`                                                                        | Maximum injection attempts before moving a message to `dead/`.                      |
+| `maxInboxMessages`    | `AGENTMESH_MAX_INBOX_MESSAGES`    | `256`                                                                      | Maximum pending `.json` messages in one inbox.                                       |
+| `maxMessageBytes`     | `AGENTMESH_MAX_MESSAGE_BYTES`     | `32768`                                                                    | Maximum serialized size of one message.                                             |
+| `maxInboxBytes`       | `AGENTMESH_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
+| `maxReplyDepth`       | `AGENTMESH_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
 
 `AGENTMESH_DEBUG=1` enables info-level logging to stderr.
 

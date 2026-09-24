@@ -28,7 +28,7 @@ export function renderEnvelope(message: MeshMessage): string {
   if (message.context) {
     header += ` | re: ${sanitizeHeaderField(message.context, MAX_CONTEXT_LENGTH)}`
   }
-  if (message.in_reply_to) header += ` | reply-to: ${message.in_reply_to}`
+  if (message.in_reply_to) header += ` | in-reply-to: ${message.in_reply_to}`
   const footer = `to reply, call ${TOOL_SEND} with to "${from}"`
   return `${header}\n${message.text}\n(end of agentmesh message; ${footer})`
 }

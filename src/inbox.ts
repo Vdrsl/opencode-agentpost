@@ -9,6 +9,7 @@
  */
 
 import { watch, type FSWatcher } from "node:fs"
+import fs from "node:fs/promises"
 import path from "node:path"
 
 import { assertValidId, type MeshConfig } from "./config.ts"
@@ -23,7 +24,7 @@ import {
   removeFile,
   writeJsonAtomic,
 } from "./store.ts"
-import type { MeshAck, MeshMessage } from "./types.ts"
+import { ErrorCode, MeshError, type ClaimMeta, type MeshAck, type MeshMessage } from "./types.ts"
 
 const CLAIM_SUFFIX = ".taken"
 
@@ -44,6 +45,19 @@ async function quarantineFile(file: string, directory: string, name: string): Pr
 }
 
 type MessageValidation = { ok: true } | { ok: false; reason: string; name: string }
+
+function retryCount(message: MeshMessage | undefined): number {
+  const value = (message as unknown as Record<string, unknown> | undefined)?.["_retryCount"]
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+function withoutInternalFields(message: MeshMessage): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(message as unknown as Record<string, unknown>).filter(
+      ([key]) => !key.startsWith("_"),
+    ),
+  )
+}
 
 function validateMessage(
   message: MeshMessage | undefined,
@@ -86,8 +100,39 @@ function validateMessage(
 export async function enqueue(config: MeshConfig, message: MeshMessage): Promise<void> {
   assertValidId(message.to)
   if (!isMessageId(message.id)) throw new TypeError(`invalid message id ${JSON.stringify(message.id)}`)
+  const serialized = JSON.stringify(message, null, 2)
+  const byteLength = Buffer.byteLength(serialized, "utf8")
+  if (byteLength > config.maxMessageBytes) {
+    throw new MeshError(
+      ErrorCode.MESSAGE_TOO_LARGE,
+      `message is ${byteLength} bytes; the limit is ${config.maxMessageBytes}`,
+    )
+  }
   const dir = inboxDirFor(config, message.to)
   await ensureDir(dir)
+  const files = await listJsonFiles(dir)
+  if (files.length >= config.maxInboxMessages) {
+    throw new MeshError(
+      ErrorCode.INBOX_FULL,
+      `inbox for ${message.to} has ${files.length} messages; the limit is ${config.maxInboxMessages}`,
+    )
+  }
+  if (files.length > config.maxInboxMessages / 2) {
+    let totalBytes = 0
+    for (const file of files) {
+      try {
+        totalBytes += (await fs.stat(path.join(dir, file))).size
+      } catch {
+        continue
+      }
+    }
+    if (totalBytes + byteLength > config.maxInboxBytes) {
+      throw new MeshError(
+        ErrorCode.INBOX_FULL,
+        `inbox for ${message.to} exceeds ${config.maxInboxBytes} bytes`,
+      )
+    }
+  }
   await writeJsonAtomic(path.join(dir, `${message.id}.json`), message)
 }
 
@@ -149,6 +194,8 @@ export class InboxWatcher {
   private readonly config: MeshConfig
   private readonly id: string
   private readonly sessionID: string
+  private readonly ownerInstance: string
+  private readonly incarnation: string
   private readonly handler: InboxHandler
   private readonly onError: (error: unknown, context: string) => void
 
@@ -156,12 +203,16 @@ export class InboxWatcher {
     config: MeshConfig,
     id: string,
     sessionID: string,
+    ownerInstance: string,
+    incarnation: string,
     handler: InboxHandler,
     onError: (error: unknown, context: string) => void,
   ) {
     this.config = config
     this.id = id
     this.sessionID = sessionID
+    this.ownerInstance = ownerInstance
+    this.incarnation = incarnation
     this.handler = handler
     this.onError = onError
   }
@@ -206,11 +257,31 @@ export class InboxWatcher {
     } catch {
       return
     }
+    const now = Date.now()
     for (const name of entries) {
       if (!name.endsWith(CLAIM_SUFFIX)) continue
-      const from = path.join(this.dir, name)
-      const to = path.join(this.dir, name.slice(0, -CLAIM_SUFFIX.length))
-      await fs.rename(from, to).catch(() => {})
+      const taken = path.join(this.dir, name)
+      const base = name.slice(0, -CLAIM_SUFFIX.length)
+      const messageId = base.replace(/\.json$/, "")
+      if (isMessageId(messageId)) {
+        const ack = await readAck(this.config, messageId)
+        if (ack?.status === "injected") {
+          await removeFile(taken)
+          continue
+        }
+      }
+      const raw = await readJson<Record<string, unknown> & { _claim?: ClaimMeta }>(taken)
+      const leaseExpiresAt = raw?._claim?.leaseExpiresAt
+      const leaseMs = typeof leaseExpiresAt === "string" ? Date.parse(leaseExpiresAt) : Number.NaN
+      if (Number.isFinite(leaseMs) && leaseMs > now) continue
+      const original = path.join(this.dir, base)
+      if (raw) {
+        delete raw["_claim"]
+        await writeJsonAtomic(original, raw)
+        await removeFile(taken)
+      } else {
+        await fs.rename(taken, original).catch(() => {})
+      }
     }
   }
 
@@ -238,7 +309,17 @@ export class InboxWatcher {
   }
 
   private async deliverOne(file: string): Promise<void> {
-    const claimed = await claimFile(file, CLAIM_SUFFIX)
+    const pending = await readJson<MeshMessage>(file)
+    const attempt = retryCount(pending) + 1
+    const claim: ClaimMeta = {
+      ownerInstance: this.ownerInstance,
+      incarnation: this.incarnation,
+      sessionID: this.sessionID,
+      claimedAt: new Date().toISOString(),
+      leaseExpiresAt: new Date(Date.now() + this.config.leaseDurationMs).toISOString(),
+      attempt,
+    }
+    const claimed = await claimFile(file, CLAIM_SUFFIX, claim)
     if (!claimed) return // someone else got there first
     const message = await readJson<MeshMessage>(claimed)
     const validation = validateMessage(message, claimed, this.id, this.config.maxTextLength)
@@ -266,8 +347,13 @@ export class InboxWatcher {
       }
       return
     }
+    const existingAck = await readAck(this.config, message.id)
+    if (existingAck?.status === "injected") {
+      await removeFile(claimed)
+      return
+    }
     try {
-      await this.handler(message)
+      await this.handler(withoutInternalFields(message) as MeshMessage)
       await writeAck(this.config, {
         id: message.id,
         to: this.id,
@@ -275,18 +361,46 @@ export class InboxWatcher {
         status: "injected",
         at: new Date().toISOString(),
       })
+      await removeFile(claimed)
     } catch (error) {
-      this.onError(error, `inject ${message.id}`)
+      const detail = error instanceof Error ? error.message : String(error)
+      this.onError(error, `inject ${message.id} (attempt ${attempt})`)
       await writeAck(this.config, {
         id: message.id,
         to: this.id,
         sessionID: this.sessionID,
         status: "failed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail,
         at: new Date().toISOString(),
       })
-    } finally {
+      if (attempt >= this.config.maxDeliveryAttempts) {
+        await this.moveToDeadLetter(claimed, message, detail, attempt)
+        return
+      }
+      const retryMessage = withoutInternalFields(message)
+      retryMessage["_retryCount"] = attempt
+      const original = claimed.slice(0, -CLAIM_SUFFIX.length)
+      await writeJsonAtomic(original, retryMessage)
       await removeFile(claimed)
     }
+  }
+
+  private async moveToDeadLetter(
+    claimed: string,
+    message: MeshMessage,
+    detail: string,
+    attempt: number,
+  ): Promise<void> {
+    const deadDir = path.join(this.dir, "dead")
+    const deadFile = path.join(deadDir, `${message.id}.json`)
+    const record = withoutInternalFields(message)
+    record["_deadLetter"] = {
+      reason: detail,
+      attempts: attempt,
+      at: new Date().toISOString(),
+    }
+    await writeJsonAtomic(deadFile, record)
+    await removeFile(claimed)
+    this.onError(new Error(`dead-lettered after ${attempt} attempts`), `message ${message.id}`)
   }
 }

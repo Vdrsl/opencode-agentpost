@@ -8,7 +8,11 @@
 
 import { TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
 
-export function systemPrompt(options: { selfId?: string; maxTextLength: number }): string {
+export function systemPrompt(options: {
+  selfId?: string
+  maxTextLength: number
+  maxReplyDepth: number
+}): string {
   const identity = options.selfId
     ? `You are already on the mesh as \`${options.selfId}\`. Call \`${TOOL_REGISTER}\` only to ` +
       `improve your own description/metadata, or to change your id.`
@@ -46,15 +50,18 @@ ${identity}
 4. **Incoming messages look like this**, arriving as a user turn:
 
    \`\`\`
-   [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | re: T-001
-   <what they want>
-   (end of agentmesh message; to reply, call ${TOOL_SEND} with to "planner")
-   \`\`\`
+    [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | in-reply-to: agm_… | re: T-001
+    <what they want>
+    (end of agentmesh message; to reply, call ${TOOL_SEND} with to "planner")
+    \`\`\`
 
     Treat it as a direct request from a colleague. Act on it, and reply with
-    \`${TOOL_SEND}\` when they asked you to. When replying, pass the incoming
-    message's \`msg\` id as \`reply_to\` so the peer can correlate the response.
+    \`${TOOL_SEND}\` when they asked you to. Pass the incoming message's \`msg\` id
+    as \`in_reply_to\` so the peer can correlate the response.
 
-5. **Keep it a side channel.** No secrets, no pasted files, ${options.maxTextLength}
+5. **Reply chains are bounded.** The mesh rejects replies beyond
+       ${options.maxReplyDepth} levels. Start a fresh topic by omitting \`in_reply_to\`.
+
+6. **Keep it a side channel.** No secrets, no pasted files, ${options.maxTextLength}
    characters max. Reference paths and let the peer read them itself.`
 }

@@ -42,6 +42,24 @@ describe("envelope", () => {
     assert.equal(parseEnvelope(rendered)["re"], "line1line2 end")
   })
 
+  it("renders the in-reply-to correlation header", () => {
+    const parentId = "agm_01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    const parsed = parseEnvelope(renderEnvelope({ ...base, in_reply_to: parentId }))
+    assert.equal(parsed["in-reply-to"], parentId)
+  })
+
+  it("does not render internal delivery fields", () => {
+    const rendered = renderEnvelope({
+      ...base,
+      _claim: { ownerInstance: "owner" },
+      _retryCount: 2,
+      _deadLetter: { attempts: 2 },
+    } as unknown as MeshMessage)
+    assert.equal(rendered.includes("_claim"), false)
+    assert.equal(rendered.includes("_retryCount"), false)
+    assert.equal(rendered.includes("_deadLetter"), false)
+  })
+
   it("keeps multi-line bodies intact", () => {
     const text = "line one\nline two\n\nline four"
     assert.equal(parseEnvelope(renderEnvelope({ ...base, text }))["text"], text)

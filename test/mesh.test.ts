@@ -9,14 +9,16 @@ import path from "node:path"
 import { after, describe, it } from "node:test"
 
 import { parseEnvelope } from "../src/envelope.ts"
+import { enqueue, InboxWatcher } from "../src/inbox.ts"
+import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
 import { buildTools } from "../src/tools.ts"
-import { MeshError } from "../src/types.ts"
+import { type ClaimMeta, MeshError } from "../src/types.ts"
 import { sessionContext, tempHome, testConfig, testMesh, waitFor } from "./helpers.ts"
 
 const cleanups: (() => Promise<void>)[] = []
 after(async () => {
-  for (const cleanup of cleanups) await cleanup()
+  for (const cleanup of cleanups.slice().reverse()) await cleanup()
 })
 
 async function twoAgents(overrides = {}) {
@@ -32,6 +34,32 @@ async function twoAgents(overrides = {}) {
   return { home, config, a, b }
 }
 
+function leaseMessage() {
+  return {
+    schemaVersion: 1 as const,
+    id: "agm_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    from: "planner",
+    to: "reviewer",
+    text: "leased message",
+    sentAt: new Date().toISOString(),
+  }
+}
+
+function leaseMessageWithId(id: string) {
+  return { ...leaseMessage(), id }
+}
+
+function leaseClaim(leaseExpiresAt: string): ClaimMeta {
+  return {
+    ownerInstance: "owner-a",
+    incarnation: "incarnation-a",
+    sessionID: "ses_b",
+    claimedAt: new Date().toISOString(),
+    leaseExpiresAt,
+    attempt: 1,
+  }
+}
+
 describe("mesh", () => {
   it("rejects invalid timing configuration", () => {
     assert.throws(
@@ -45,6 +73,276 @@ describe("mesh", () => {
     const tools = buildTools(a.mesh, "http://127.0.0.1:4096")
     const register = tools[TOOL_REGISTER] as unknown as { args?: Record<string, unknown> }
     assert.equal(register.args && "force" in register.args, false)
+  })
+
+  it("writes lease metadata into a claimed message", async () => {
+    const home = await tempHome()
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const file = path.join(home, "message.json")
+    const claim = leaseClaim(new Date(Date.now() + 60_000).toISOString())
+    await writeJsonAtomic(file, leaseMessage())
+    const claimed = await claimFile(file, ".taken", claim)
+    assert.ok(claimed)
+    const raw = await readJson<Record<string, unknown>>(claimed)
+    assert.deepEqual(raw?.["_claim"], claim)
+  })
+
+  it("does not recover a claim with an active lease", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { leaseDurationMs: 60_000, pollIntervalMs: 50 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    const taken = path.join(inbox, `${message.id}.json.taken`)
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(taken, {
+      ...message,
+      _claim: leaseClaim(new Date(Date.now() + 60_000).toISOString()),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.equal(injected.length, 0)
+    assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), true)
+  })
+
+  it("recovers an expired claim and delivers it", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 50 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    const taken = path.join(inbox, `${message.id}.json.taken`)
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(taken, {
+      ...message,
+      _claim: leaseClaim(new Date(Date.now() - 1_000).toISOString()),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.deepEqual(injected, ["leased message"])
+    assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), false)
+  })
+
+  it("removes a claimed message when its ack already exists", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 50 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    const taken = path.join(inbox, `${message.id}.json.taken`)
+    await fs.mkdir(inbox, { recursive: true })
+    await fs.mkdir(config.acksDir, { recursive: true })
+    await writeJsonAtomic(taken, {
+      ...message,
+      _claim: leaseClaim(new Date(Date.now() + 60_000).toISOString()),
+    })
+    await writeJsonAtomic(path.join(config.acksDir, `${message.id}.json`), {
+      id: message.id,
+      to: "reviewer",
+      sessionID: "ses_b",
+      status: "injected",
+      at: new Date().toISOString(),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.deepEqual(injected, [])
+    assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), false)
+  })
+
+  it("does not inject a pending message when its ack already exists", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 50 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    const pending = path.join(inbox, `${message.id}.json`)
+    await fs.mkdir(inbox, { recursive: true })
+    await fs.mkdir(config.acksDir, { recursive: true })
+    await writeJsonAtomic(pending, message)
+    await writeJsonAtomic(path.join(config.acksDir, `${message.id}.json`), {
+      id: message.id,
+      to: "reviewer",
+      sessionID: "ses_b",
+      status: "injected",
+      at: new Date().toISOString(),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.deepEqual(injected, [])
+    assert.deepEqual(await fs.readdir(inbox), [])
+  })
+
+  it("retries a failed injection and succeeds on the next attempt", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 50, maxDeliveryAttempts: 3 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    let attempts = 0
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error("temporary failure")
+      },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.equal(attempts, 2)
+    assert.deepEqual(await fs.readdir(inbox), [])
+    const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
+    assert.equal(ack?.["status"], "injected")
+  })
+
+  it("dead-letters a message after max delivery attempts", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 50, maxDeliveryAttempts: 2 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    let attempts = 0
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => {
+        attempts += 1
+        throw new Error("permanent failure")
+      },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    await watcher.drain()
+    assert.equal(attempts, 2)
+    const deadFile = path.join(inbox, "dead", `${message.id}.json`)
+    const dead = await readJson<Record<string, unknown>>(deadFile)
+    assert.equal((dead?.["_deadLetter"] as Record<string, unknown>)?.["attempts"], 2)
+    assert.equal(dead?.["_claim"], undefined)
+    assert.equal(dead?.["_retryCount"], undefined)
+    const entries = await fs.readdir(inbox)
+    assert.equal(entries.includes("dead"), true)
+    assert.equal(entries.includes(`${message.id}.json`), false)
+    assert.equal(entries.includes(`${message.id}.json.taken`), false)
+  })
+
+  it("rejects a message larger than maxMessageBytes", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { maxMessageBytes: 32 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    await assert.rejects(
+      enqueue(config, { ...leaseMessage(), text: "x".repeat(100) }),
+      (error: MeshError) => error.code === "E_MESSAGE_TOO_LARGE",
+    )
+  })
+
+  it("rejects an inbox at maxInboxMessages", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { maxInboxMessages: 1 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    await enqueue(config, leaseMessage())
+    await assert.rejects(
+      enqueue(config, leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAW")),
+      (error: MeshError) => error.code === "E_INBOX_FULL",
+    )
+  })
+
+  it("rejects an inbox at maxInboxBytes", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, {
+      maxInboxMessages: 3,
+      maxInboxBytes: 300,
+      maxMessageBytes: 200,
+    })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const first = leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAW")
+    const second = leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAX")
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${first.id}.json`), { ...first, text: "x".repeat(150) })
+    await writeJsonAtomic(path.join(inbox, `${second.id}.json`), { ...second, text: "x".repeat(150) })
+    await assert.rejects(
+      enqueue(config, leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAY")),
+      (error: MeshError) => error.code === "E_INBOX_FULL",
+    )
+  })
+
+  it("propagates inbox backpressure errors from send", async () => {
+    const { config, a, b } = await twoAgents({ maxInboxMessages: 1 })
+    await a.mesh.register({ context: sessionContext("ses_a", "/tmp/planner"), id: "planner", description: "plans" })
+    await b.mesh.registry.register({
+      id: "reviewer",
+      description: "reviews",
+      routing: {
+        sessionID: "ses_b",
+        directory: "/tmp/reviewer",
+        worktree: "/tmp/reviewer",
+        serverUrl: "http://127.0.0.1:4096",
+      },
+    })
+    const existing = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${existing.id}.json`), existing)
+    await assert.rejects(
+      a.mesh.send({
+        context: sessionContext("ses_a", "/tmp/planner"),
+        to: "reviewer",
+        text: "new message",
+      }),
+      (error: MeshError) => error.code === "E_INBOX_FULL",
+    )
   })
 
   it("delivers a message into the peer's session", async () => {
@@ -101,7 +399,76 @@ describe("mesh", () => {
       in_reply_to: request.messageId,
     })
     assert.equal(response.status, "accepted")
-    assert.equal(parseEnvelope(a.injected[0]!.text)["reply-to"], request.messageId)
+    assert.equal(parseEnvelope(a.injected[0]!.text)["in-reply-to"], request.messageId)
+  })
+
+  it("records reply depth on a reply message", async () => {
+    const { config, a, b } = await twoAgents({ ackWaitMs: 250 })
+    await a.mesh.registry.register({
+      id: "planner",
+      description: "plans",
+      routing: {
+        sessionID: "ses_a",
+        directory: "/tmp/planner",
+        worktree: "/tmp/planner",
+        serverUrl: "http://127.0.0.1:4096",
+      },
+    })
+    await b.mesh.register({
+      context: sessionContext("ses_b", "/tmp/reviewer"),
+      id: "reviewer",
+      description: "reviews",
+    })
+    const result = await b.mesh.send({
+      context: sessionContext("ses_b", "/tmp/reviewer"),
+      to: "planner",
+      text: "reply",
+      in_reply_to: "agm_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    })
+    const message = await readJson<{ replyDepth?: number }>(
+      path.join(config.inboxDir, "planner", `${result.messageId}.json`),
+    )
+    assert.equal(message?.replyDepth, 1)
+  })
+
+  it("rejects replies beyond maxReplyDepth", async () => {
+    const { config, a, b } = await twoAgents({ maxReplyDepth: 1 })
+    await a.mesh.registry.register({
+      id: "planner",
+      description: "plans",
+      routing: {
+        sessionID: "ses_a",
+        directory: "/tmp/planner",
+        worktree: "/tmp/planner",
+        serverUrl: "http://127.0.0.1:4096",
+      },
+    })
+    await b.mesh.register({
+      context: sessionContext("ses_b", "/tmp/reviewer"),
+      id: "reviewer",
+      description: "reviews",
+    })
+    const internal = b.mesh as unknown as {
+      agents: Map<string, { watcher: InboxWatcher }>
+    }
+    await internal.agents.get("ses_b")!.watcher.stop()
+    const parentId = "agm_01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${parentId}.json`), {
+      ...leaseMessage(),
+      id: parentId,
+      replyDepth: 1,
+    })
+    await assert.rejects(
+      b.mesh.send({
+        context: sessionContext("ses_b", "/tmp/reviewer"),
+        to: "planner",
+        text: "too deep",
+        in_reply_to: parentId,
+      }),
+      (error: MeshError) => error.code === "E_REPLY_DEPTH_EXCEEDED",
+    )
   })
 
   it("sees the peer through agentmesh_peers", async () => {

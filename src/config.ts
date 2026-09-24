@@ -43,6 +43,18 @@ export type MeshOptions = {
   pollIntervalMs?: number
   /** Maximum message body length, in characters. */
   maxTextLength?: number
+  /** How long a claimed message lease remains valid. */
+  leaseDurationMs?: number
+  /** Maximum number of injection attempts before dead-lettering. */
+  maxDeliveryAttempts?: number
+  /** Maximum number of pending .json messages in one inbox. */
+  maxInboxMessages?: number
+  /** Maximum serialized bytes in one pending message. */
+  maxMessageBytes?: number
+  /** Maximum serialized bytes across pending messages in one inbox. */
+  maxInboxBytes?: number
+  /** Maximum reply-chain depth. */
+  maxReplyDepth?: number
 }
 
 export type MeshConfig = {
@@ -60,6 +72,12 @@ export type MeshConfig = {
   ackWaitMs: number
   pollIntervalMs: number
   maxTextLength: number
+  leaseDurationMs: number
+  maxDeliveryAttempts: number
+  maxInboxMessages: number
+  maxMessageBytes: number
+  maxInboxBytes: number
+  maxReplyDepth: number
 }
 
 const DEFAULTS = {
@@ -71,6 +89,12 @@ const DEFAULTS = {
   ackWaitMs: 3_000,
   pollIntervalMs: 2_000,
   maxTextLength: 8_000,
+  leaseDurationMs: 60_000,
+  maxDeliveryAttempts: 3,
+  maxInboxMessages: 256,
+  maxMessageBytes: 32_768,
+  maxInboxBytes: 8_388_608,
+  maxReplyDepth: 8,
 } as const
 
 function defaultHome(): string {
@@ -154,6 +178,36 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.maxTextLength,
       DEFAULTS.maxTextLength,
     ) as number,
+    leaseDurationMs: pick(
+      envNumber("AGENTMESH_LEASE_DURATION_MS"),
+      options.leaseDurationMs,
+      DEFAULTS.leaseDurationMs,
+    ) as number,
+    maxDeliveryAttempts: pick(
+      envNumber("AGENTMESH_MAX_DELIVERY_ATTEMPTS"),
+      options.maxDeliveryAttempts,
+      DEFAULTS.maxDeliveryAttempts,
+    ) as number,
+    maxInboxMessages: pick(
+      envNumber("AGENTMESH_MAX_INBOX_MESSAGES"),
+      options.maxInboxMessages,
+      DEFAULTS.maxInboxMessages,
+    ) as number,
+    maxMessageBytes: pick(
+      envNumber("AGENTMESH_MAX_MESSAGE_BYTES"),
+      options.maxMessageBytes,
+      DEFAULTS.maxMessageBytes,
+    ) as number,
+    maxInboxBytes: pick(
+      envNumber("AGENTMESH_MAX_INBOX_BYTES"),
+      options.maxInboxBytes,
+      DEFAULTS.maxInboxBytes,
+    ) as number,
+    maxReplyDepth: pick(
+      envNumber("AGENTMESH_MAX_REPLY_DEPTH"),
+      options.maxReplyDepth,
+      DEFAULTS.maxReplyDepth,
+    ) as number,
   }
   if (!Number.isFinite(config.heartbeatIntervalMs) || config.heartbeatIntervalMs <= 0) {
     throw new Error("AgentMesh config: heartbeatIntervalMs must be a finite number greater than zero")
@@ -190,6 +244,45 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   }
   if (config.maxTextLength > 100_000) {
     throw new Error("AgentMesh config: maxTextLength must be at most 100000")
+  }
+  if (!Number.isFinite(config.leaseDurationMs) || config.leaseDurationMs <= 0) {
+    throw new Error("AgentMesh config: leaseDurationMs must be a finite number greater than zero")
+  }
+  if (config.leaseDurationMs > 600_000) {
+    throw new Error("AgentMesh config: leaseDurationMs must be at most 600000ms")
+  }
+  if (
+    !Number.isFinite(config.maxDeliveryAttempts) ||
+    !Number.isInteger(config.maxDeliveryAttempts) ||
+    config.maxDeliveryAttempts < 1 ||
+    config.maxDeliveryAttempts > 10
+  ) {
+    throw new Error("AgentMesh config: maxDeliveryAttempts must be an integer from 1 to 10")
+  }
+  if (
+    !Number.isFinite(config.maxInboxMessages) ||
+    !Number.isInteger(config.maxInboxMessages) ||
+    config.maxInboxMessages < 1 ||
+    config.maxInboxMessages > 10_000
+  ) {
+    throw new Error("AgentMesh config: maxInboxMessages must be an integer from 1 to 10000")
+  }
+  if (!Number.isFinite(config.maxMessageBytes) || config.maxMessageBytes <= 0 || config.maxMessageBytes > 1_048_576) {
+    throw new Error("AgentMesh config: maxMessageBytes must be from 1 to 1048576")
+  }
+  if (!Number.isFinite(config.maxInboxBytes) || config.maxInboxBytes <= 0 || config.maxInboxBytes > 104_857_600) {
+    throw new Error("AgentMesh config: maxInboxBytes must be from 1 to 104857600")
+  }
+  if (config.maxMessageBytes > config.maxInboxBytes) {
+    throw new Error("AgentMesh config: maxMessageBytes must not exceed maxInboxBytes")
+  }
+  if (
+    !Number.isFinite(config.maxReplyDepth) ||
+    !Number.isInteger(config.maxReplyDepth) ||
+    config.maxReplyDepth < 1 ||
+    config.maxReplyDepth > 32
+  ) {
+    throw new Error("AgentMesh config: maxReplyDepth must be an integer from 1 to 32")
   }
   return config
 }

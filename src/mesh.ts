@@ -12,8 +12,9 @@ import { randomUUID } from "node:crypto"
 
 import { assertValidId, type MeshConfig, slugify } from "./config.ts"
 import { renderEnvelope } from "./envelope.ts"
-import { enqueue, InboxWatcher, reapAcks, waitForAck } from "./inbox.ts"
+import { enqueue, inboxDirFor, InboxWatcher, reapAcks, waitForAck } from "./inbox.ts"
 import { isMessageId, newMessageId } from "./ids.ts"
+import { readJson } from "./store.ts"
 import { Registry } from "./registry.ts"
 import {
   type AgentRouting,
@@ -155,6 +156,8 @@ export class Mesh {
         this.config,
         record.id,
         routing.sessionID,
+        record.ownerInstance ?? this.ownerInstance,
+        record.incarnation ?? "",
         (message) => this.receive(routing, message),
         (error, context) => this.deps.log("error", `${context}: ${describe(error)}`),
       )
@@ -248,6 +251,13 @@ export class Mesh {
 
   // -------------------------------------------------------------- messaging
 
+  private async resolveReplyDepth(agentId: string, parentId: string): Promise<number> {
+    const file = path.join(inboxDirFor(this.config, agentId), `${parentId}.json`)
+    const parent = await readJson<MeshMessage>(file)
+    const depth = parent?.replyDepth
+    return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
+  }
+
   async send(input: {
     context: SessionContext
     to: string
@@ -281,6 +291,18 @@ export class Mesh {
       )
     }
 
+    let replyDepth = 0
+    if (input.in_reply_to) {
+      const parentDepth = await this.resolveReplyDepth(from, input.in_reply_to)
+      if (parentDepth >= this.config.maxReplyDepth) {
+        throw new MeshError(
+          ErrorCode.REPLY_DEPTH_EXCEEDED,
+          `reply chain depth ${parentDepth + 1} exceeds the limit of ${this.config.maxReplyDepth}`,
+        )
+      }
+      replyDepth = parentDepth + 1
+    }
+
     const target = await this.registry.get(input.to)
     if (!target) {
       const known = (await this.peers({ sessionID: input.context.sessionID }))
@@ -299,6 +321,7 @@ export class Mesh {
       from,
       to: input.to,
       text: input.text,
+      replyDepth,
       sentAt: new Date().toISOString(),
     }
     if (input.context_tag) message.context = input.context_tag

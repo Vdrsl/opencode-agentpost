@@ -14,6 +14,15 @@ export type OwnerIdentity = {
   incarnation: string
 }
 
+export type ClaimMeta = {
+  ownerInstance: string
+  incarnation: string
+  sessionID: string
+  claimedAt: string
+  leaseExpiresAt: string
+  attempt: number
+}
+
 export type AgentRecord = {
   schemaVersion?: 1
   id: string
@@ -49,6 +58,8 @@ export type MeshMessage = {
   text: string
   context?: string
   in_reply_to?: string
+  replyDepth?: number
+  _retryCount?: number
   sentAt: string
 }
 
@@ -83,5 +94,9 @@ export const ErrorCode = {
   TEXT_TOO_LONG: "E_TEXT_TOO_LONG",
   INVALID_REPLY: "E_INVALID_REPLY",
   FENCED: "E_FENCED",
+  INBOX_FULL: "E_INBOX_FULL",
+  MESSAGE_TOO_LARGE: "E_MESSAGE_TOO_LARGE",
+  REPLY_DEPTH_EXCEEDED: "E_REPLY_DEPTH_EXCEEDED",
+  DEAD_LETTERED: "E_DEAD_LETTERED",
   IO: "E_IO",
 } as const

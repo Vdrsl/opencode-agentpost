@@ -110,15 +110,20 @@ export function buildTools(
         reply_to: tool.schema
           .string()
           .optional()
+          .describe("Legacy alias for in_reply_to."),
+        in_reply_to: tool.schema
+          .string()
+          .optional()
           .describe("Message id from the incoming envelope when this is a reply."),
       },
       async execute(args, ctx) {
+        const inReplyTo = args.in_reply_to ?? args.reply_to
         const result = await mesh.send({
           context: contextOf(ctx),
           to: args.to,
           text: args.text,
           ...(args.context ? { context_tag: args.context } : {}),
-          ...(args.reply_to ? { in_reply_to: args.reply_to } : {}),
+          ...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
         })
         return {
           title: `${result.status} -> ${result.to}`,
