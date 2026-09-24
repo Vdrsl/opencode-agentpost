@@ -12,6 +12,7 @@ npm test                                                 # node --test on test/*
 npm run build                                            # emits dist/ (also runs on prepublish)
 node --test --experimental-strip-types test/mesh.test.ts  # single file
 node --test --experimental-strip-types --test-name-pattern="burst" test/mesh.test.ts
+npm pack --dry-run                                      # verifies the published file set
 ```
 
 - Node >= 22 required: tests run TypeScript directly via `--experimental-strip-types`.
@@ -80,7 +81,7 @@ Correctness rests on facts that are easy to break accidentally:
 - `src/prompt.ts` and the tool descriptions in `src/tools.ts` are injected into other models'
   prompts. They are behavioural spec, not comments — edit them with the same care as code.
 - Config precedence: `AGENTMESH_*` env > plugin options > defaults (`resolveConfig`, `src/config.ts`).
-  `AGENTMESH_DEBUG=1` enables info-level logging to stderr.
+- Structured logging is opt-in with `AGENTMESH_LOG_LEVEL=off|info|debug`; output is JSON lines with fixed events and allowlisted numeric/boolean fields. `AGENTMESH_DEBUG=1` is a deprecated info fallback.
 - Installed by users as `{ "plugin": ["opencode-agentmesh"] }`, or with options as
   `{ "plugin": [["opencode-agentmesh", { "id": "…" }]] }`.
 
@@ -90,11 +91,18 @@ Correctness rests on facts that are easy to break accidentally:
   (temp home via `fs.mkdtemp`, real `fs.watch`, real atomic writes) is real.
 - `test/mesh.test.ts` runs **two `Mesh` instances over one home directory** — that is the
   simulation of two separate opencode processes, and it is the test that matters.
+- `test/e2e.test.ts` uses the real `InboxWatcher` against a local fake OpenCode HTTP server; keep
+  its status mapping and abort signal path aligned with the root SDK boundary.
+- `test/crash-matrix.test.ts` owns crash-hook state assertions; `test/security.test.ts` owns ID,
+  acknowledgement, storage, envelope, and recipient-boundary regressions.
 - Tests are wall-clock sensitive: helpers force `pollIntervalMs: 50`, and cases override
   `ackWaitMs`/`maxTextLength` via `twoAgents({ … })`. The burst-ordering test takes ~1s by design;
   the suite is ~2s total. Don't add sleeps; use `waitFor` from `test/helpers.ts`.
 
-## Known gap
+## Security and limitations
 
-`package.json` `files` lists `README.md`, but no `README.md` exists, so it is silently omitted from
-the published tarball (`npm pack --dry-run` to confirm).
+The shared home directory is trusted storage, not encrypted transport or an authorization boundary.
+Local `processed/` markers suppress replay after a successful injection but do not make the
+filesystem handoff transactional or exactly-once. `accepted` confirms asynchronous prompt
+acceptance, not peer comprehension; `ambiguous` outcomes require operator judgment. Keep security
+tests and the fake HTTP boundary tests in the same suite when changing storage or acknowledgements.

@@ -11,7 +11,8 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 
-import { type MeshOptions, PACKAGE_NAME, resolveConfig } from "./config.ts"
+import { type MeshOptions, resolveConfig } from "./config.ts"
+import { createLogger } from "./logger.ts"
 import { Mesh } from "./mesh.ts"
 import { systemPrompt } from "./prompt.ts"
 import { PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "./types.ts"
@@ -24,10 +25,7 @@ export const AgentMesh: Plugin = async (input, options) => {
   const config = resolveConfig((options ?? {}) as MeshOptions)
   const serverUrl = input.serverUrl ? input.serverUrl.toString().replace(/\/$/, "") : ""
 
-  const log = (level: "info" | "warn" | "error", message: string): void => {
-    if (level === "info" && !process.env["AGENTMESH_DEBUG"]) return
-    process.stderr.write(`[${PACKAGE_NAME}] ${level}: ${message}\n`)
-  }
+  const logger = createLogger()
 
   const errorTag = (result: unknown): string | undefined => {
     const error = (result as { error?: unknown } | undefined)?.error
@@ -37,7 +35,7 @@ export const AgentMesh: Plugin = async (input, options) => {
   }
 
   const mesh = new Mesh(config, {
-    log,
+    logger,
     async inject({ sessionID, directory, text }) {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), config.promptTimeoutMs)
@@ -67,17 +65,13 @@ export const AgentMesh: Plugin = async (input, options) => {
 
         const promptAsync = input.client.session.promptAsync as unknown as (
           parameters: Record<string, unknown>,
-          options?: { signal?: AbortSignal },
         ) => Promise<unknown>
-        const result = await promptAsync.call(
-          input.client.session,
-          {
-            path: { id: sessionID },
-            query: { directory },
-            body: { parts: [{ type: "text", text }] },
-          },
-          { signal: controller.signal },
-        )
+        const result = await promptAsync.call(input.client.session, {
+          path: { id: sessionID },
+          query: { directory },
+          body: { parts: [{ type: "text", text }] },
+          signal: controller.signal,
+        })
         // The SDK reports transport/HTTP failures in `error` rather than throwing.
         const error = (result as { error?: unknown }).error
         const tag = errorTag(result)
@@ -109,7 +103,7 @@ export const AgentMesh: Plugin = async (input, options) => {
       try {
         await mesh.autoRegister(sessionContext(sessionID))
       } catch (error) {
-        log("error", `auto-register failed: ${error instanceof Error ? error.message : error}`)
+        logger("error", "auto_register_failed")
       }
     },
 
@@ -127,7 +121,7 @@ export const AgentMesh: Plugin = async (input, options) => {
 
     /** A deleted session must not linger in the registry as a live peer. */
     event: async ({ event }) => {
-      log("info", `event: ${event.type}`)
+      logger("debug", "opencode_event")
       if (event.type !== "session.deleted") return
       await mesh.unregisterSession(event.properties.info.id).catch(() => {})
     },

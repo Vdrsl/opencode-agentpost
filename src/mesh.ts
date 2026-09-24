@@ -11,6 +11,7 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 
 import { assertValidId, type MeshConfig, slugify } from "./config.ts"
+import type { Logger } from "./logger.ts"
 import { renderEnvelope } from "./envelope.ts"
 import { enqueue, inboxDirFor, InboxWatcher, reapAcks, waitForAck } from "./inbox.ts"
 import { isMessageId, newMessageId } from "./ids.ts"
@@ -34,7 +35,7 @@ export type InjectFn = (target: {
 
 export type MeshDeps = {
   inject: InjectFn
-  log: (level: "info" | "warn" | "error", message: string) => void
+  logger: Logger
 }
 
 /** Identity of the session a tool call came from. */
@@ -67,7 +68,7 @@ export class Mesh {
   constructor(config: MeshConfig, deps: MeshDeps) {
     this.config = config
     this.deps = deps
-    this.registry = new Registry(config)
+    this.registry = new Registry(config, this.deps.logger)
   }
 
   // ------------------------------------------------------------- lifecycle
@@ -86,10 +87,10 @@ export class Mesh {
           incarnation: agent.incarnation ?? "",
         })
         if (!alive) {
-          this.deps.log("warn", `heartbeat for ${agent.id} was fenced or the record vanished`)
+          this.deps.logger("warn", "heartbeat_fenced")
         }
       } catch (error) {
-        this.deps.log("error", `heartbeat for session ${sessionID} failed: ${describe(error)}`)
+        this.deps.logger("error", "heartbeat_failed")
       }
     }
     const now = Date.now()
@@ -97,10 +98,10 @@ export class Mesh {
     this.lastReap = now
     try {
       const removed = await this.registry.reap(now)
-      if (removed.length) this.deps.log("info", `reaped expired agents: ${removed.join(", ")}`)
+       if (removed.length) this.deps.logger("info", "agents_reaped", { count: removed.length })
       await reapAcks(this.config, now)
-    } catch (error) {
-      this.deps.log("error", `sweep failed: ${describe(error)}`)
+    } catch {
+      this.deps.logger("error", "sweep_failed")
     }
   }
 
@@ -159,7 +160,7 @@ export class Mesh {
         record.ownerInstance ?? this.ownerInstance,
         record.incarnation ?? "",
         (message) => this.receive(routing, message),
-        (error, context) => this.deps.log("error", `${context}: ${describe(error)}`),
+        (_error, event, fields) => this.deps.logger("error", event, fields),
       )
        this.agents.set(routing.sessionID, {
          id: record.id,
@@ -217,7 +218,7 @@ export class Mesh {
       metadata: reuse?.metadata ?? {},
       force: true,
     })
-    this.deps.log("info", `auto-registered as ${id} (session ${context.sessionID})`)
+    this.deps.logger("info", "auto_registered")
     return id
   }
 
@@ -233,7 +234,7 @@ export class Mesh {
       })
     } catch (error) {
       if (error instanceof MeshError && error.code === ErrorCode.FENCED) {
-        this.deps.log("warn", `unregister for ${agent.id} was fenced`)
+        this.deps.logger("warn", "unregister_fenced")
         return
       }
       throw error
@@ -328,7 +329,7 @@ export class Mesh {
     if (input.in_reply_to) message.in_reply_to = input.in_reply_to
     await enqueue(this.config, message)
 
-    const ack = await waitForAck(this.config, message.id, this.config.ackWaitMs)
+    const ack = await waitForAck(this.config, message.id, this.config.ackWaitMs, input.to)
     if (ack?.status === "accepted") {
       return {
         to: input.to,
@@ -371,10 +372,6 @@ export class Mesh {
       directory: routing.directory,
       text: renderEnvelope(message),
     })
-    this.deps.log("info", `accepted ${message.id} from ${message.from} to ${message.to}`)
+    this.deps.logger("info", "message_accepted")
   }
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

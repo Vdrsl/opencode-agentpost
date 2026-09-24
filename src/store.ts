@@ -18,7 +18,20 @@ function isMissing(error: unknown): boolean {
 }
 
 export async function ensureDir(dir: string): Promise<void> {
+  try {
+    const existing = await fs.lstat(dir)
+    if (existing.isSymbolicLink() || !existing.isDirectory()) {
+      throw new Error(`unsafe directory: ${dir}`)
+    }
+    return
+  } catch (error) {
+    if (!isMissing(error)) throw error
+  }
   await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+  const created = await fs.lstat(dir)
+  if (created.isSymbolicLink() || !created.isDirectory()) {
+    throw new Error(`unsafe directory: ${dir}`)
+  }
 }
 
 async function replaceFile(temp: string, file: string): Promise<void> {
@@ -87,8 +100,11 @@ export async function readJsonWithMtime<T>(
 
 export async function listJsonFiles(dir: string): Promise<string[]> {
   try {
-    const entries = await fs.readdir(dir)
-    return entries.filter((name) => name.endsWith(".json")).sort()
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name)
+      .sort()
   } catch (error) {
     if (isMissing(error)) return []
     throw error

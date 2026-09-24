@@ -11,6 +11,7 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 
 import { assertValidId, type MeshConfig } from "./config.ts"
+import { noopLogger, type Logger } from "./logger.ts"
 import {
   ageMs,
   listJsonFiles,
@@ -58,9 +59,11 @@ function sameOwner(record: AgentRecord, expected: OwnerIdentity | undefined): bo
 
 export class Registry {
   private readonly config: MeshConfig
+  private readonly logger: Logger
 
-  constructor(config: MeshConfig) {
+  constructor(config: MeshConfig, logger: Logger = noopLogger) {
     this.config = config
+    this.logger = logger
   }
 
   recordPath(id: string): string {

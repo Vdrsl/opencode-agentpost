@@ -14,6 +14,7 @@ import path from "node:path"
 
 import { assertValidId, type MeshConfig } from "./config.ts"
 import { isMessageId } from "./ids.ts"
+import type { LogFields } from "./logger.ts"
 import {
   ageMs,
   claimFile,
@@ -193,9 +194,14 @@ function normalizeAck(value: MeshAck | undefined): MeshAck | undefined {
 export async function readAck(
   config: MeshConfig,
   messageId: string,
+  expectedTo?: string,
 ): Promise<MeshAck | undefined> {
   if (!isMessageId(messageId)) throw new TypeError(`invalid message id ${JSON.stringify(messageId)}`)
-  return normalizeAck(await readJson<MeshAck>(ackPath(config, messageId)))
+  const ack = normalizeAck(await readJson<MeshAck>(ackPath(config, messageId)))
+  if (!ack || ack.id !== messageId || (expectedTo !== undefined && ack.to !== expectedTo)) {
+    return undefined
+  }
+  return ack
 }
 
 async function writeAck(config: MeshConfig, ack: MeshAck): Promise<void> {
@@ -207,11 +213,12 @@ export async function waitForAck(
   config: MeshConfig,
   messageId: string,
   timeoutMs: number,
+  expectedTo?: string,
 ): Promise<MeshAck | undefined> {
   const deadline = Date.now() + timeoutMs
   const step = 100
   for (;;) {
-    const ack = await readAck(config, messageId)
+    const ack = await readAck(config, messageId, expectedTo)
     if (ack) return ack
     if (Date.now() >= deadline) return undefined
     await new Promise((resolve) => setTimeout(resolve, Math.min(step, deadline - Date.now())))
@@ -224,7 +231,7 @@ export async function reapAcks(config: MeshConfig, now: number = Date.now()): Pr
   for (const file of await listJsonFiles(config.acksDir)) {
     const full = path.join(config.acksDir, file)
     const read = await readJsonWithMtime<MeshAck>(full)
-    if (read && ageMs(read.mtimeMs, now) < config.expireAfterMs) continue
+    if (read && ageMs(read.mtimeMs, now) < config.ackRetentionMs) continue
     await removeFile(full)
     removed++
   }
@@ -232,6 +239,28 @@ export async function reapAcks(config: MeshConfig, now: number = Date.now()): Pr
 }
 
 export type InboxHandler = (message: MeshMessage) => Promise<void>
+
+export type InboxCrashHooks = {
+  afterClaim?: () => void | Promise<void>
+  afterHandler?: () => void | Promise<void>
+  afterAck?: () => void | Promise<void>
+}
+
+class InboxCrashHookError extends Error {
+  constructor() {
+    super("Inbox crash hook triggered")
+    this.name = "InboxCrashHookError"
+  }
+}
+
+async function runCrashHook(hook: (() => void | Promise<void>) | undefined): Promise<void> {
+  if (!hook) return
+  try {
+    await hook()
+  } catch {
+    throw new InboxCrashHookError()
+  }
+}
 
 /**
  * Watches one agent's inbox. `fs.watch` handles the common case; the interval
@@ -251,7 +280,8 @@ export class InboxWatcher {
   private readonly ownerInstance: string
   private readonly incarnation: string
   private readonly handler: InboxHandler
-  private readonly onError: (error: unknown, context: string) => void
+  private readonly onError: (error: unknown, event: string, fields?: LogFields) => void
+  private readonly crashHooks: InboxCrashHooks
 
   constructor(
     config: MeshConfig,
@@ -260,7 +290,8 @@ export class InboxWatcher {
     ownerInstance: string,
     incarnation: string,
     handler: InboxHandler,
-    onError: (error: unknown, context: string) => void,
+    onError: (error: unknown, event: string, fields?: LogFields) => void,
+    crashHooks: InboxCrashHooks = {},
   ) {
     this.config = config
     this.id = id
@@ -269,6 +300,7 @@ export class InboxWatcher {
     this.incarnation = incarnation
     this.handler = handler
     this.onError = onError
+    this.crashHooks = crashHooks
   }
 
   get dir(): string {
@@ -280,10 +312,10 @@ export class InboxWatcher {
     await this.recoverClaimed()
     try {
       this.watcher = watch(this.dir, { persistent: false }, () => void this.drain())
-      this.watcher.on("error", (error) => this.onError(error, "inbox watch"))
+      this.watcher.on("error", (error) => this.onError(error, "inbox_watch_failed"))
     } catch (error) {
       // Not fatal: the poll interval still delivers, just less promptly.
-      this.onError(error, "inbox watch setup")
+      this.onError(error, "inbox_watch_setup_failed")
     }
     this.timer = setInterval(() => void this.drain(), this.config.pollIntervalMs)
     this.timer.unref?.()
@@ -318,7 +350,7 @@ export class InboxWatcher {
       const base = name.slice(0, -CLAIM_SUFFIX.length)
       const messageId = base.replace(/\.json$/, "")
       if (isMessageId(messageId)) {
-        const ack = await readAck(this.config, messageId)
+        const ack = await readAck(this.config, messageId, this.id)
         if (ack?.status === "accepted") {
           await removeFile(taken)
           continue
@@ -361,7 +393,7 @@ export class InboxWatcher {
         }
       } while (this.pending)
     } catch (error) {
-      this.onError(error, "inbox drain")
+      this.onError(error, "inbox_drain_failed")
     } finally {
       this.draining = false
     }
@@ -380,14 +412,15 @@ export class InboxWatcher {
     }
     const claimed = await claimFile(file, CLAIM_SUFFIX, claim)
     if (!claimed) return // someone else got there first
+    await runCrashHook(this.crashHooks.afterClaim)
     const message = await readJson<MeshMessage>(claimed)
     const validation = validateMessage(message, claimed, this.id, this.config.maxTextLength)
     if (!validation.ok) {
       try {
         await quarantineFile(claimed, path.join(this.dir, "quarantine"), validation.name)
-        this.onError(new Error(validation.reason), `quarantine ${validation.name}`)
+        this.onError(new Error(validation.reason), "message_quarantined")
       } catch (error) {
-        this.onError(error, `quarantine ${validation.name}`)
+        this.onError(error, "message_quarantine_failed")
       }
       return
     }
@@ -399,14 +432,14 @@ export class InboxWatcher {
         await quarantineFile(claimed, path.join(this.dir, "quarantine"), name)
         this.onError(
           new Error(`unsupported message schemaVersion ${JSON.stringify(schemaVersion)}`),
-          `quarantine ${name}`,
+          "message_schema_unsupported",
         )
       } catch (error) {
-        this.onError(error, `quarantine ${name}`)
+        this.onError(error, "message_schema_quarantine_failed")
       }
       return
     }
-    const existingAck = await readAck(this.config, message.id)
+    const existingAck = await readAck(this.config, message.id, this.id)
     if (existingAck?.status === "accepted") {
       await removeFile(claimed)
       return
@@ -418,13 +451,16 @@ export class InboxWatcher {
     }
     try {
       await this.handler(withoutInternalFields(message) as MeshMessage)
+      await runCrashHook(this.crashHooks.afterHandler)
       await writeProcessedMarker(this.config, message.id)
       await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
+      await runCrashHook(this.crashHooks.afterAck)
       await removeFile(claimed)
     } catch (error) {
+      if (error instanceof InboxCrashHookError) throw error
       const detail = error instanceof Error ? error.message : String(error)
       if (error instanceof PromptTimeoutError) {
-        this.onError(error, `prompt ambiguous ${message.id} (attempt ${attempt})`)
+        this.onError(error, "prompt_ambiguous", { attempt })
         await writeAck(this.config, {
           id: message.id,
           to: this.id,
@@ -437,7 +473,7 @@ export class InboxWatcher {
         return
       }
       if (error instanceof SessionNotFoundError) {
-        this.onError(error, `session not found ${message.id}`)
+        this.onError(error, "session_not_found", { attempt })
         await writeAck(this.config, {
           id: message.id,
           to: this.id,
@@ -451,7 +487,7 @@ export class InboxWatcher {
       }
       if (error instanceof SessionBusyError) {
         const defers = busyDeferCount(message) + 1
-        this.onError(error, `session busy ${message.id} (defer ${defers})`)
+        this.onError(error, "session_busy", { attempt, defers })
         await new Promise((resolve) => setTimeout(resolve, this.config.busyDeferMs))
         if (defers >= this.config.maxBusyDefers) {
           await writeAck(this.config, {
@@ -472,7 +508,7 @@ export class InboxWatcher {
         await removeFile(claimed)
         return
       }
-      this.onError(error, `inject ${message.id} (attempt ${attempt})`)
+      this.onError(error, "inject_failed", { attempt })
       await writeAck(this.config, {
         id: message.id,
         to: this.id,
@@ -509,6 +545,6 @@ export class InboxWatcher {
     }
     await writeJsonAtomic(deadFile, record)
     await removeFile(claimed)
-    this.onError(new Error(`dead-lettered after ${attempt} attempts`), `message ${message.id}`)
+    this.onError(new Error(`dead-lettered after ${attempt} attempts`), "message_dead_lettered", { attempt })
   }
 }

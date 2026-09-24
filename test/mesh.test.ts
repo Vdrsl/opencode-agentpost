@@ -12,6 +12,7 @@ import { parseEnvelope } from "../src/envelope.ts"
 import { enqueue, InboxWatcher, readAck } from "../src/inbox.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
+import { noopLogger } from "../src/logger.ts"
 import { buildTools } from "../src/tools.ts"
 import { type ClaimMeta, MeshError, PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "../src/types.ts"
 import { sessionContext, tempHome, testConfig, testMesh, waitFor } from "./helpers.ts"
@@ -828,7 +829,7 @@ describe("mesh", () => {
     const { config, a } = await twoAgents()
     const broken = {
       mesh: new (await import("../src/mesh.ts")).Mesh(config, {
-        log: () => {},
+        logger: noopLogger,
         async inject() {
           throw new Error("session is gone")
         },
@@ -860,7 +861,7 @@ describe("mesh", () => {
     const { config, a } = await twoAgents()
     const broken = {
       mesh: new (await import("../src/mesh.ts")).Mesh(config, {
-        log: () => {},
+        logger: noopLogger,
         async inject() {
           throw new PromptTimeoutError(25)
         },
@@ -901,6 +902,8 @@ describe("mesh", () => {
     let deferred: Record<string, unknown> | undefined
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
+    let markDeferredRead!: () => void
+    const deferredRead = new Promise<void>((resolve) => { markDeferredRead = resolve })
     const watcher = new InboxWatcher(
       config,
       "reviewer",
@@ -913,6 +916,7 @@ describe("mesh", () => {
         deferred = await readJson<Record<string, unknown>>(
           path.join(inbox, `${message.id}.json.taken`),
         )
+        markDeferredRead()
         await gate
       },
       () => {},
@@ -920,6 +924,7 @@ describe("mesh", () => {
     cleanups.push(() => watcher.stop())
     const starting = watcher.start()
     await waitFor(() => attempts === 2)
+    await deferredRead
     assert.equal(deferred?.["_busyDeferCount"], 1)
     assert.equal(deferred?.["_retryCount"], undefined)
     release()

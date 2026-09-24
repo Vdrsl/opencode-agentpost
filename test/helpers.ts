@@ -4,6 +4,7 @@ import path from "node:path"
 
 import { type MeshConfig, resolveConfig } from "../src/config.ts"
 import { Mesh, type SessionContext } from "../src/mesh.ts"
+import { noopLogger } from "../src/logger.ts"
 
 export async function tempHome(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-test-"))
@@ -25,7 +26,7 @@ export type Injected = { sessionID: string; text: string }
 export function testMesh(config: MeshConfig): { mesh: Mesh; injected: Injected[] } {
   const injected: Injected[] = []
   const mesh = new Mesh(config, {
-    log: () => {},
+    logger: noopLogger,
     async inject({ sessionID, text }) {
       injected.push({ sessionID, text })
     },

@@ -123,6 +123,7 @@ variable that overrides it (env > plugin options > defaults):
 | `staleAfterMs`        | `AGENTMESH_STALE_AFTER_MS`        | `60000`                                                                    | No heartbeat for this long → agent shows as `stale`.                                 |
 | `expireAfterMs`       | `AGENTMESH_EXPIRE_AFTER_MS`       | `300000`                                                                   | No heartbeat for this long → agent's record is dropped entirely.                     |
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
+| `ackRetentionMs`      | `AGENTMESH_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
 | `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `5000`                                                                     | Delay before retrying a busy OpenCode session.                                      |
 | `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before delivery becomes `ambiguous`.                                    |
 | `promptTimeoutMs`     | `AGENTMESH_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
@@ -135,7 +136,27 @@ variable that overrides it (env > plugin options > defaults):
 | `maxInboxBytes`       | `AGENTMESH_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
 | `maxReplyDepth`       | `AGENTMESH_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
 
-`AGENTMESH_DEBUG=1` enables info-level logging to stderr.
+`AGENTMESH_LOG_LEVEL` controls structured stderr logging: `off` (default), `info`, or
+`debug`. Each enabled line is JSON with a timestamp, level, fixed event name, and
+safe numeric/boolean fields only; message text, metadata, server URLs, credentials,
+and control-character user strings are never logged. `AGENTMESH_DEBUG=1` remains a
+deprecated fallback that selects `info` when `AGENTMESH_LOG_LEVEL` is unset.
+
+Acknowledgement files are retained independently from agent records. `ackRetentionMs`
+defaults to five minutes and is capped at 24 hours; use it when a shared directory
+needs a longer audit window.
+
+## Security and limitations
+
+Agent IDs are restricted to safe lowercase slugs, including rejection of Windows
+reserved names and path traversal. Inbox, claim, and acknowledgement reads reject
+unsafe storage paths and symlink entries, and acknowledgements must match both the
+message ID and intended recipient. The shared home directory is a trusted transport:
+it is not encrypted and does not provide authentication or authorization. The local
+`processed/` marker suppresses replay after a successful injection, but it is not a
+transactional exactly-once guarantee. `accepted` means the recipient's OpenCode
+accepted the asynchronous prompt, not that the peer read or answered it; `ambiguous`
+outcomes must not be blindly resent.
 
 ## Requirements
 
@@ -150,6 +171,7 @@ npm install
 npm run typecheck   # tsc --noEmit
 npm test            # node --test on test/*.test.ts
 npm run build        # emits dist/
+npm pack --dry-run  # verifies the published file set
 ```
 
 See [AGENTS.md](./AGENTS.md) for architecture notes and conventions if you're

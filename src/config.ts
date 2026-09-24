@@ -40,6 +40,7 @@ export type MeshOptions = {
   expireAfterMs?: number
   /** How long `agentmesh_send` waits for the peer to confirm injection. */
   ackWaitMs?: number
+  ackRetentionMs?: number
   /** How long a busy session is deferred before another attempt. */
   busyDeferMs?: number
   /** Maximum busy defers before a message becomes ambiguous. */
@@ -78,6 +79,7 @@ export type MeshConfig = {
   staleAfterMs: number
   expireAfterMs: number
   ackWaitMs: number
+  ackRetentionMs: number
   busyDeferMs: number
   maxBusyDefers: number
   promptTimeoutMs: number
@@ -98,6 +100,7 @@ const DEFAULTS = {
   staleAfterMs: 60_000,
   expireAfterMs: 300_000,
   ackWaitMs: 3_000,
+  ackRetentionMs: 300_000,
   busyDeferMs: 5_000,
   maxBusyDefers: 12,
   promptTimeoutMs: 30_000,
@@ -183,6 +186,11 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.ackWaitMs,
       DEFAULTS.ackWaitMs,
     ) as number,
+    ackRetentionMs: pick(
+      envNumber("AGENTMESH_ACK_RETENTION_MS"),
+      options.ackRetentionMs,
+      DEFAULTS.ackRetentionMs,
+    ) as number,
     busyDeferMs: pick(
       envNumber("AGENTMESH_BUSY_DEFER_MS"),
       options.busyDeferMs,
@@ -259,6 +267,12 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   }
   if (!Number.isFinite(config.ackWaitMs) || config.ackWaitMs <= 0) {
     throw new Error("AgentMesh config: ackWaitMs must be a finite number greater than zero")
+  }
+  if (!Number.isFinite(config.ackRetentionMs) || config.ackRetentionMs <= 0) {
+    throw new Error("AgentMesh config: ackRetentionMs must be a finite number greater than zero")
+  }
+  if (config.ackRetentionMs > 86_400_000) {
+    throw new Error("AgentMesh config: ackRetentionMs must be at most 86400000ms")
   }
   if (!Number.isFinite(config.busyDeferMs) || config.busyDeferMs <= 0) {
     throw new Error("AgentMesh config: busyDeferMs must be a finite number greater than zero")
@@ -339,9 +353,17 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
 
 /** Agent ids are lowercase slugs so they are safe as file names. */
 export const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/
+const WINDOWS_RESERVED_IDS = new Set([
+  "con",
+  "nul",
+  "prn",
+  "aux",
+  ...Array.from({ length: 9 }, (_, index) => `com${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `lpt${index + 1}`),
+])
 
 export function assertValidId(id: string): void {
-  if (!ID_PATTERN.test(id)) {
+  if (!ID_PATTERN.test(id) || WINDOWS_RESERVED_IDS.has(id.toLowerCase())) {
     throw new MeshError(
       ErrorCode.INVALID_ID,
       `id ${JSON.stringify(id)} must be 2-64 chars of [a-z0-9_-] and start with [a-z0-9]`,

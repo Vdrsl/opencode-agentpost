@@ -1,0 +1,279 @@
+import assert from "node:assert/strict"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { describe, it } from "node:test"
+
+import { InboxWatcher } from "../src/inbox.ts"
+import { newMessageId } from "../src/ids.ts"
+import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
+import type { ClaimMeta, MeshMessage } from "../src/types.ts"
+import { testConfig, waitFor } from "./helpers.ts"
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function message(id = newMessageId()): MeshMessage {
+  return {
+    schemaVersion: 1,
+    id,
+    from: "owner-a",
+    to: "reviewer",
+    text: "crash matrix",
+    sentAt: new Date().toISOString(),
+  }
+}
+
+function claim(id: string, expired = false): ClaimMeta {
+  const now = Date.now()
+  const at = expired ? now - 1000 : now
+  return {
+    ownerInstance: "owner-a",
+    incarnation: "incarnation-a",
+    sessionID: "ses_b",
+    claimedAt: new Date(at).toISOString(),
+    leaseExpiresAt: new Date(expired ? at - 1 : at + 1).toISOString(),
+    attempt: 0,
+  }
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await fs.access(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function fixture(overrides: Record<string, unknown> = {}): Promise<{
+  home: string
+  config: ReturnType<typeof testConfig>
+  inbox: string
+  pending: (id: string) => string
+  claimed: (id: string) => string
+  processed: (id: string) => string
+  ack: (id: string) => string
+}> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-crash-"))
+  const config = testConfig(home, { leaseDurationMs: 5, pollIntervalMs: 10, ...overrides })
+  const inbox = path.join(config.inboxDir, "reviewer")
+  await fs.mkdir(inbox, { recursive: true })
+  return {
+    home,
+    config,
+    inbox,
+    pending: (id) => path.join(inbox, `${id}.json`),
+    claimed: (id) => path.join(inbox, `${id}.json.taken`),
+    processed: (id) => path.join(config.processedDir, `${id}.json`),
+    ack: (id) => path.join(config.acksDir, `${id}.json`),
+  }
+}
+
+async function stopAndRemove(home: string, watcher?: InboxWatcher): Promise<void> {
+  await watcher?.stop()
+  await fs.rm(home, { recursive: true, force: true })
+}
+
+describe("crash matrix", () => {
+  it("C1 leaves a claim when the process crashes after claim", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterClaim: () => { throw new Error("crash C1") } },
+    )
+    try {
+      await watcher.start()
+      await watcher.stop()
+      assert.equal(injected, 0)
+      assert.equal(await exists(f.claimed(msg.id)), true)
+      assert.equal(await exists(f.processed(msg.id)), false)
+      assert.equal(await exists(f.ack(msg.id)), false)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+
+  it("C2 retries an expired claim after a crash immediately after claim", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const first = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterClaim: () => { throw new Error("crash C2") } },
+    )
+    const second = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-b",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await first.start()
+      await first.stop()
+      await sleep(10)
+      await second.start()
+      await waitFor(() => injected === 1)
+      const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
+      assert.equal(ack?.["status"], "accepted")
+      assert.equal(await exists(f.processed(msg.id)), true)
+    } finally {
+      await stopAndRemove(f.home, first)
+      await stopAndRemove(f.home, second)
+    }
+  })
+
+  it("C3 leaves no marker or ack when the process crashes after handler", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterHandler: () => { throw new Error("crash C3") } },
+    )
+    try {
+      await watcher.start()
+      await watcher.stop()
+      assert.equal(injected, 1)
+      assert.equal(await exists(f.processed(msg.id)), false)
+      assert.equal(await exists(f.ack(msg.id)), false)
+      assert.equal(await exists(f.claimed(msg.id)), true)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+
+  it("C4 reinjects an expired handler crash because no processed marker exists", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const first = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterHandler: () => { throw new Error("crash C4") } },
+    )
+    const second = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-b",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await first.start()
+      await first.stop()
+      await sleep(10)
+      await second.start()
+      await waitFor(() => injected === 2)
+      const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
+      assert.equal(ack?.["status"], "accepted")
+      assert.equal(await exists(f.processed(msg.id)), true)
+    } finally {
+      await stopAndRemove(f.home, first)
+      await stopAndRemove(f.home, second)
+    }
+  })
+
+  it("C5 suppresses a crash after accepted ack and claim recovery", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const first = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterAck: () => { throw new Error("crash C5") } },
+    )
+    const second = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-b",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await first.start()
+      await first.stop()
+      await sleep(10)
+      assert.equal(await exists(f.processed(msg.id)), true)
+      const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
+      assert.equal(ack?.["status"], "accepted")
+      await second.start()
+      await waitFor(() => injected === 1)
+      assert.equal(await exists(f.claimed(msg.id)), false)
+    } finally {
+      await stopAndRemove(f.home, first)
+      await stopAndRemove(f.home, second)
+    }
+  })
+
+  it("C6 recovers a marker without an ack without reinjecting", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    const claimed = await claimFile(f.pending(msg.id), ".taken", claim(msg.id, true))
+    assert.ok(claimed)
+    await writeJsonAtomic(f.processed(msg.id), { id: msg.id, at: new Date().toISOString() })
+    let injected = 0
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-b",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await watcher.start()
+      await waitFor(() => injected === 0)
+      const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
+      assert.equal(ack?.["status"], "accepted")
+      assert.equal(await exists(f.claimed(msg.id)), false)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+})

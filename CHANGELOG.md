@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased — OpenCode boundary
+## v0.5.0 — Observability and test hardening
 
-- Add root PluginInput `session.get`/`session.status` preflight handling for busy, retry, and missing sessions.
-- Add prompt timeouts, busy defers, explicit `accepted`/`failed`/`ambiguous` delivery states, and legacy acknowledgement normalization.
-- Add a recipient-local processed registry for crash recovery without querying `session.messages`.
-- Keep asynchronous prompt delivery diagnostic-only after a real event probe found no completion or failure event.
-- Document the verified OpenCode SDK 1.18.32 client and event-stream behavior.
+- Add structured JSON-line logging with `off`, `info`, and `debug` levels, safe allowlisted fields, and a deprecated `AGENTMESH_DEBUG=1` fallback.
+- Add independent acknowledgement retention with `ackRetentionMs` and environment configuration.
+- Add crash-boundary hooks and C1–C6 coverage for claim, handler, acknowledgement, and recovery failures.
+- Add a real fake OpenCode HTTP server and eight boundary E2E cases for 204, 404, 409, 500, timeout, busy recovery, duplicate suppression, and deleted sessions.
+- Add security coverage for path traversal, Windows reserved IDs, Unicode slug handling, symlinks, forged acknowledgements, recipient/from mismatches, control characters, and oversized messages.
+- Harden storage and acknowledgement boundaries without changing delivery, wire, ownership, or tool semantics.
+- Document the shared-directory trust model, local replay suppression limitation, and honest asynchronous delivery outcomes.
 
 ## v0.3.0 — Crash-safe delivery
 
