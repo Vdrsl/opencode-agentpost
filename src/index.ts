@@ -14,6 +14,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { type MeshOptions, PACKAGE_NAME, resolveConfig } from "./config.ts"
 import { Mesh } from "./mesh.ts"
 import { systemPrompt } from "./prompt.ts"
+import { PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "./types.ts"
 import { buildTools } from "./tools.ts"
 
 export type { MeshOptions } from "./config.ts"
@@ -28,17 +29,67 @@ export const AgentMesh: Plugin = async (input, options) => {
     process.stderr.write(`[${PACKAGE_NAME}] ${level}: ${message}\n`)
   }
 
+  const errorTag = (result: unknown): string | undefined => {
+    const error = (result as { error?: unknown } | undefined)?.error
+    if (!error || typeof error !== "object") return undefined
+    const tag = (error as { _tag?: unknown })._tag
+    return typeof tag === "string" ? tag : undefined
+  }
+
   const mesh = new Mesh(config, {
     log,
     async inject({ sessionID, directory, text }) {
-      const result = await input.client.session.promptAsync({
-        path: { id: sessionID },
-        query: { directory },
-        body: { parts: [{ type: "text", text }] },
-      })
-      // The SDK reports transport/HTTP failures in `error` rather than throwing.
-      const error = (result as { error?: unknown }).error
-      if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error))
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), config.promptTimeoutMs)
+      try {
+        const sessionResult = await input.client.session.get({
+          path: { id: sessionID },
+          query: { directory },
+        })
+        const sessionErrorTag = errorTag(sessionResult)
+        if (sessionErrorTag === "SessionNotFoundError") {
+          throw new SessionNotFoundError(sessionID)
+        }
+        if (sessionErrorTag) {
+          throw new Error(`OpenCode session lookup failed: ${sessionErrorTag}`)
+        }
+
+        const statusResult = await input.client.session.status({ query: { directory } })
+        const statusErrorTag = errorTag(statusResult)
+        if (statusErrorTag) {
+          throw new Error(`OpenCode session status failed: ${statusErrorTag}`)
+        }
+        const statuses = statusResult.data as Record<string, { type?: unknown }> | undefined
+        const currentStatus = statuses?.[sessionID]?.type
+        if (currentStatus === "busy" || currentStatus === "retry") {
+          throw new SessionBusyError(sessionID)
+        }
+
+        const promptAsync = input.client.session.promptAsync as unknown as (
+          parameters: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ) => Promise<unknown>
+        const result = await promptAsync.call(
+          input.client.session,
+          {
+            path: { id: sessionID },
+            query: { directory },
+            body: { parts: [{ type: "text", text }] },
+          },
+          { signal: controller.signal },
+        )
+        // The SDK reports transport/HTTP failures in `error` rather than throwing.
+        const error = (result as { error?: unknown }).error
+        const tag = errorTag(result)
+        if (tag === "SessionBusyError") throw new SessionBusyError(sessionID)
+        if (tag === "SessionNotFoundError") throw new SessionNotFoundError(sessionID)
+        if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error))
+      } catch (error) {
+        if (controller.signal.aborted) throw new PromptTimeoutError(config.promptTimeoutMs)
+        throw error
+      } finally {
+        clearTimeout(timeout)
+      }
     },
   })
 
@@ -76,6 +127,7 @@ export const AgentMesh: Plugin = async (input, options) => {
 
     /** A deleted session must not linger in the registry as a live peer. */
     event: async ({ event }) => {
+      log("info", `event: ${event.type}`)
       if (event.type !== "session.deleted") return
       await mesh.unregisterSession(event.properties.info.id).catch(() => {})
     },

@@ -24,7 +24,16 @@ import {
   removeFile,
   writeJsonAtomic,
 } from "./store.ts"
-import { ErrorCode, MeshError, type ClaimMeta, type MeshAck, type MeshMessage } from "./types.ts"
+import {
+  ErrorCode,
+  MeshError,
+  PromptTimeoutError,
+  SessionBusyError,
+  SessionNotFoundError,
+  type ClaimMeta,
+  type MeshAck,
+  type MeshMessage,
+} from "./types.ts"
 
 const CLAIM_SUFFIX = ".taken"
 
@@ -38,6 +47,38 @@ function ackPath(config: MeshConfig, messageId: string): string {
   return path.join(config.acksDir, `${messageId}.json`)
 }
 
+function processedPath(config: MeshConfig, messageId: string): string {
+  if (!isMessageId(messageId)) throw new TypeError(`invalid message id ${JSON.stringify(messageId)}`)
+  return path.join(config.processedDir, `${messageId}.json`)
+}
+
+async function hasProcessedMarker(config: MeshConfig, messageId: string): Promise<boolean> {
+  const marker = await readJson<{ id?: unknown }>(processedPath(config, messageId))
+  return marker?.id === messageId
+}
+
+async function writeAcceptedAck(
+  config: MeshConfig,
+  messageId: string,
+  to: string,
+  sessionID: string,
+): Promise<void> {
+  await writeAck(config, {
+    id: messageId,
+    to,
+    sessionID,
+    status: "accepted",
+    at: new Date().toISOString(),
+  })
+}
+
+async function writeProcessedMarker(config: MeshConfig, messageId: string): Promise<void> {
+  await writeJsonAtomic(processedPath(config, messageId), {
+    id: messageId,
+    at: new Date().toISOString(),
+  })
+}
+
 async function quarantineFile(file: string, directory: string, name: string): Promise<void> {
   const fs = await import("node:fs/promises")
   await ensureDir(directory)
@@ -48,6 +89,11 @@ type MessageValidation = { ok: true } | { ok: false; reason: string; name: strin
 
 function retryCount(message: MeshMessage | undefined): number {
   const value = (message as unknown as Record<string, unknown> | undefined)?.["_retryCount"]
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+function busyDeferCount(message: MeshMessage | undefined): number {
+  const value = (message as unknown as Record<string, unknown> | undefined)?.["_busyDeferCount"]
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
 }
 
@@ -136,12 +182,20 @@ export async function enqueue(config: MeshConfig, message: MeshMessage): Promise
   await writeJsonAtomic(path.join(dir, `${message.id}.json`), message)
 }
 
+function normalizeAck(value: MeshAck | undefined): MeshAck | undefined {
+  if (!value) return undefined
+  const status = (value as unknown as { status?: unknown }).status
+  if (status === "injected") return { ...value, status: "accepted" }
+  if (status === "accepted" || status === "failed" || status === "ambiguous") return value
+  return undefined
+}
+
 export async function readAck(
   config: MeshConfig,
   messageId: string,
 ): Promise<MeshAck | undefined> {
   if (!isMessageId(messageId)) throw new TypeError(`invalid message id ${JSON.stringify(messageId)}`)
-  return readJson<MeshAck>(ackPath(config, messageId))
+  return normalizeAck(await readJson<MeshAck>(ackPath(config, messageId)))
 }
 
 async function writeAck(config: MeshConfig, ack: MeshAck): Promise<void> {
@@ -265,7 +319,12 @@ export class InboxWatcher {
       const messageId = base.replace(/\.json$/, "")
       if (isMessageId(messageId)) {
         const ack = await readAck(this.config, messageId)
-        if (ack?.status === "injected") {
+        if (ack?.status === "accepted") {
+          await removeFile(taken)
+          continue
+        }
+        if (await hasProcessedMarker(this.config, messageId)) {
+          await writeAcceptedAck(this.config, messageId, this.id, this.sessionID)
           await removeFile(taken)
           continue
         }
@@ -348,22 +407,71 @@ export class InboxWatcher {
       return
     }
     const existingAck = await readAck(this.config, message.id)
-    if (existingAck?.status === "injected") {
+    if (existingAck?.status === "accepted") {
+      await removeFile(claimed)
+      return
+    }
+    if (await hasProcessedMarker(this.config, message.id)) {
+      await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await removeFile(claimed)
       return
     }
     try {
       await this.handler(withoutInternalFields(message) as MeshMessage)
-      await writeAck(this.config, {
-        id: message.id,
-        to: this.id,
-        sessionID: this.sessionID,
-        status: "injected",
-        at: new Date().toISOString(),
-      })
+      await writeProcessedMarker(this.config, message.id)
+      await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await removeFile(claimed)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
+      if (error instanceof PromptTimeoutError) {
+        this.onError(error, `prompt ambiguous ${message.id} (attempt ${attempt})`)
+        await writeAck(this.config, {
+          id: message.id,
+          to: this.id,
+          sessionID: this.sessionID,
+          status: "ambiguous",
+          detail,
+          at: new Date().toISOString(),
+        })
+        await removeFile(claimed)
+        return
+      }
+      if (error instanceof SessionNotFoundError) {
+        this.onError(error, `session not found ${message.id}`)
+        await writeAck(this.config, {
+          id: message.id,
+          to: this.id,
+          sessionID: this.sessionID,
+          status: "failed",
+          detail,
+          at: new Date().toISOString(),
+        })
+        await this.moveToDeadLetter(claimed, message, detail, attempt)
+        return
+      }
+      if (error instanceof SessionBusyError) {
+        const defers = busyDeferCount(message) + 1
+        this.onError(error, `session busy ${message.id} (defer ${defers})`)
+        await new Promise((resolve) => setTimeout(resolve, this.config.busyDeferMs))
+        if (defers >= this.config.maxBusyDefers) {
+          await writeAck(this.config, {
+            id: message.id,
+            to: this.id,
+            sessionID: this.sessionID,
+            status: "ambiguous",
+            detail: `session remained busy after ${defers} defers`,
+            at: new Date().toISOString(),
+          })
+          await removeFile(claimed)
+          return
+        }
+        const deferred = withoutInternalFields(message)
+        deferred["_busyDeferCount"] = defers
+        const original = claimed.slice(0, -CLAIM_SUFFIX.length)
+        await writeJsonAtomic(original, deferred)
+        await removeFile(claimed)
+        return
+      }
       this.onError(error, `inject ${message.id} (attempt ${attempt})`)
       await writeAck(this.config, {
         id: message.id,

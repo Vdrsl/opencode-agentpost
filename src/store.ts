@@ -21,12 +21,38 @@ export async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true, mode: 0o700 })
 }
 
+async function replaceFile(temp: string, file: string): Promise<void> {
+  try {
+    await fs.rename(temp, file)
+    return
+  } catch (error) {
+    if (process.platform !== "win32") throw error
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== "EEXIST" && code !== "EPERM") throw error
+  }
+
+  const backup = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.bak`
+  try {
+    await fs.rename(file, backup)
+  } catch {
+    await fs.rename(temp, file)
+    return
+  }
+  try {
+    await fs.rename(temp, file)
+  } catch (error) {
+    await fs.rename(backup, file).catch(() => {})
+    throw error
+  }
+  await fs.rm(backup, { force: true }).catch(() => {})
+}
+
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   await ensureDir(path.dirname(file))
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`
   try {
     await fs.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
-    await fs.rename(temp, file)
+    await replaceFile(temp, file)
   } catch (error) {
     await fs.rm(temp, { force: true }).catch(() => {})
     throw error

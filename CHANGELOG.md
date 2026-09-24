@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — OpenCode boundary
+
+- Add root PluginInput `session.get`/`session.status` preflight handling for busy, retry, and missing sessions.
+- Add prompt timeouts, busy defers, explicit `accepted`/`failed`/`ambiguous` delivery states, and legacy acknowledgement normalization.
+- Add a recipient-local processed registry for crash recovery without querying `session.messages`.
+- Keep asynchronous prompt delivery diagnostic-only after a real event probe found no completion or failure event.
+- Document the verified OpenCode SDK 1.18.32 client and event-stream behavior.
+
 ## v0.3.0 — Crash-safe delivery
 
 - Add lease metadata to claims and recover only expired claims.

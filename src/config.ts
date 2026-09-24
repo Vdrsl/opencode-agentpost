@@ -8,6 +8,7 @@
  *   <home>/agents/<id>.json       record, written only by <id>
  *   <home>/inbox/<id>/<msg>.json  messages for <id>, written by peers
  *   <home>/acks/<msg>.json        delivery ack, written by the recipient
+ *   <home>/processed/<msg>.json   local recipient marker after successful injection
  */
 
 import os from "node:os"
@@ -39,6 +40,12 @@ export type MeshOptions = {
   expireAfterMs?: number
   /** How long `agentmesh_send` waits for the peer to confirm injection. */
   ackWaitMs?: number
+  /** How long a busy session is deferred before another attempt. */
+  busyDeferMs?: number
+  /** Maximum busy defers before a message becomes ambiguous. */
+  maxBusyDefers?: number
+  /** How long a single OpenCode prompt request may run before becoming ambiguous. */
+  promptTimeoutMs?: number
   /** Inbox poll interval; a fallback for missed fs.watch events. */
   pollIntervalMs?: number
   /** Maximum message body length, in characters. */
@@ -62,6 +69,7 @@ export type MeshConfig = {
   agentsDir: string
   inboxDir: string
   acksDir: string
+  processedDir: string
   id?: string
   hostId: string
   autoRegister: boolean
@@ -70,6 +78,9 @@ export type MeshConfig = {
   staleAfterMs: number
   expireAfterMs: number
   ackWaitMs: number
+  busyDeferMs: number
+  maxBusyDefers: number
+  promptTimeoutMs: number
   pollIntervalMs: number
   maxTextLength: number
   leaseDurationMs: number
@@ -87,6 +98,9 @@ const DEFAULTS = {
   staleAfterMs: 60_000,
   expireAfterMs: 300_000,
   ackWaitMs: 3_000,
+  busyDeferMs: 5_000,
+  maxBusyDefers: 12,
+  promptTimeoutMs: 30_000,
   pollIntervalMs: 2_000,
   maxTextLength: 8_000,
   leaseDurationMs: 60_000,
@@ -136,6 +150,7 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
     agentsDir: path.join(home, "agents"),
     inboxDir: path.join(home, "inbox"),
     acksDir: path.join(home, "acks"),
+    processedDir: path.join(home, "processed"),
     id: pick(envString("AGENTMESH_ID"), options.id),
     hostId: pick(envString("AGENTMESH_HOST_ID"), options.hostId, os.hostname()) as string,
     autoRegister: pick(
@@ -167,6 +182,21 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       envNumber("AGENTMESH_ACK_WAIT_MS"),
       options.ackWaitMs,
       DEFAULTS.ackWaitMs,
+    ) as number,
+    busyDeferMs: pick(
+      envNumber("AGENTMESH_BUSY_DEFER_MS"),
+      options.busyDeferMs,
+      DEFAULTS.busyDeferMs,
+    ) as number,
+    maxBusyDefers: pick(
+      envNumber("AGENTMESH_MAX_BUSY_DEFERS"),
+      options.maxBusyDefers,
+      DEFAULTS.maxBusyDefers,
+    ) as number,
+    promptTimeoutMs: pick(
+      envNumber("AGENTMESH_PROMPT_TIMEOUT_MS"),
+      options.promptTimeoutMs,
+      DEFAULTS.promptTimeoutMs,
     ) as number,
     pollIntervalMs: pick(
       envNumber("AGENTMESH_POLL_INTERVAL_MS"),
@@ -229,6 +259,26 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   }
   if (!Number.isFinite(config.ackWaitMs) || config.ackWaitMs <= 0) {
     throw new Error("AgentMesh config: ackWaitMs must be a finite number greater than zero")
+  }
+  if (!Number.isFinite(config.busyDeferMs) || config.busyDeferMs <= 0) {
+    throw new Error("AgentMesh config: busyDeferMs must be a finite number greater than zero")
+  }
+  if (config.busyDeferMs > 60_000) {
+    throw new Error("AgentMesh config: busyDeferMs must be at most 60000ms")
+  }
+  if (
+    !Number.isFinite(config.maxBusyDefers) ||
+    !Number.isInteger(config.maxBusyDefers) ||
+    config.maxBusyDefers < 1 ||
+    config.maxBusyDefers > 100
+  ) {
+    throw new Error("AgentMesh config: maxBusyDefers must be an integer from 1 to 100")
+  }
+  if (!Number.isFinite(config.promptTimeoutMs) || config.promptTimeoutMs <= 0) {
+    throw new Error("AgentMesh config: promptTimeoutMs must be a finite number greater than zero")
+  }
+  if (config.promptTimeoutMs > 120_000) {
+    throw new Error("AgentMesh config: promptTimeoutMs must be at most 120000ms")
   }
   if (!Number.isFinite(config.maxTextLength) || config.maxTextLength <= 0) {
     throw new Error("AgentMesh config: maxTextLength must be a finite number greater than zero")

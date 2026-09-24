@@ -329,12 +329,20 @@ export class Mesh {
     await enqueue(this.config, message)
 
     const ack = await waitForAck(this.config, message.id, this.config.ackWaitMs)
-    if (ack?.status === "injected") {
+    if (ack?.status === "accepted") {
       return {
         to: input.to,
         messageId: message.id,
         status: "accepted",
         detail: `accepted into ${input.to}'s session as a new user turn`,
+      }
+    }
+    if (ack?.status === "ambiguous") {
+      return {
+        to: input.to,
+        messageId: message.id,
+        status: "ambiguous",
+        detail: ack.detail ?? `${input.to}'s delivery outcome is unknown`,
       }
     }
     if (ack?.status === "failed") {

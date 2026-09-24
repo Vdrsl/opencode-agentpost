@@ -9,11 +9,11 @@ import path from "node:path"
 import { after, describe, it } from "node:test"
 
 import { parseEnvelope } from "../src/envelope.ts"
-import { enqueue, InboxWatcher } from "../src/inbox.ts"
+import { enqueue, InboxWatcher, readAck } from "../src/inbox.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
 import { buildTools } from "../src/tools.ts"
-import { type ClaimMeta, MeshError } from "../src/types.ts"
+import { type ClaimMeta, MeshError, PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "../src/types.ts"
 import { sessionContext, tempHome, testConfig, testMesh, waitFor } from "./helpers.ts"
 
 const cleanups: (() => Promise<void>)[] = []
@@ -65,6 +65,24 @@ describe("mesh", () => {
     assert.throws(
       () => resolveConfig({ heartbeatIntervalMs: 100, staleAfterMs: 100 }),
       /heartbeatIntervalMs < staleAfterMs < expireAfterMs/,
+    )
+  })
+
+  it("rejects an excessive prompt timeout", () => {
+    assert.throws(
+      () => resolveConfig({ promptTimeoutMs: 120_001 }),
+      /promptTimeoutMs must be at most 120000ms/,
+    )
+  })
+
+  it("rejects invalid busy defer configuration", () => {
+    assert.throws(
+      () => resolveConfig({ busyDeferMs: 60_001 }),
+      /busyDeferMs must be at most 60000ms/,
+    )
+    assert.throws(
+      () => resolveConfig({ maxBusyDefers: 0 }),
+      /maxBusyDefers must be an integer from 1 to 100/,
     )
   })
 
@@ -141,6 +159,70 @@ describe("mesh", () => {
     await watcher.start()
     assert.deepEqual(injected, ["leased message"])
     assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), false)
+    const marker = await readJson<Record<string, unknown>>(path.join(config.processedDir, `${message.id}.json`))
+    assert.equal(marker?.["id"], message.id)
+  })
+
+  it("does not reinject a pending message with a processed marker", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    await writeJsonAtomic(path.join(config.processedDir, `${message.id}.json`), {
+      id: message.id,
+      at: new Date().toISOString(),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.deepEqual(injected, [])
+    assert.equal((await readAck(config, message.id))?.status, "accepted")
+    assert.deepEqual(await fs.readdir(inbox), [])
+  })
+
+  it("recovers a processed claim without reinjecting", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    const taken = path.join(inbox, `${message.id}.json.taken`)
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(taken, {
+      ...message,
+      _claim: leaseClaim(new Date(Date.now() - 1_000).toISOString()),
+    })
+    await writeJsonAtomic(path.join(config.processedDir, `${message.id}.json`), {
+      id: message.id,
+      at: new Date().toISOString(),
+    })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (value) => injected.push(value.text),
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    assert.deepEqual(injected, [])
+    assert.equal((await readAck(config, message.id))?.status, "accepted")
+    assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), false)
   })
 
   it("removes a claimed message when its ack already exists", async () => {
@@ -176,6 +258,7 @@ describe("mesh", () => {
     cleanups.push(() => watcher.stop())
     await watcher.start()
     assert.deepEqual(injected, [])
+    assert.equal((await readAck(config, message.id))?.status, "accepted")
     assert.equal((await fs.readdir(inbox)).includes(path.basename(taken)), false)
   })
 
@@ -193,7 +276,7 @@ describe("mesh", () => {
       id: message.id,
       to: "reviewer",
       sessionID: "ses_b",
-      status: "injected",
+      status: "accepted",
       at: new Date().toISOString(),
     })
     const injected: string[] = []
@@ -238,7 +321,7 @@ describe("mesh", () => {
     assert.equal(attempts, 2)
     assert.deepEqual(await fs.readdir(inbox), [])
     const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
-    assert.equal(ack?.["status"], "injected")
+    assert.equal(ack?.["status"], "accepted")
   })
 
   it("dead-letters a message after max delivery attempts", async () => {
@@ -771,6 +854,130 @@ describe("mesh", () => {
     })
     assert.equal(result.status, "failed")
     assert.match(result.detail, /session is gone/)
+  })
+
+  it("reports a prompt timeout as ambiguous without retrying", async () => {
+    const { config, a } = await twoAgents()
+    const broken = {
+      mesh: new (await import("../src/mesh.ts")).Mesh(config, {
+        log: () => {},
+        async inject() {
+          throw new PromptTimeoutError(25)
+        },
+      }),
+    }
+    cleanups.push(() => broken.mesh.dispose())
+
+    await a.mesh.register({
+      context: sessionContext("ses_a", "/tmp/planner"),
+      id: "planner",
+      description: "plans",
+    })
+    await broken.mesh.register({
+      context: sessionContext("ses_b", "/tmp/reviewer"),
+      id: "reviewer",
+      description: "reviews",
+    })
+
+    const result = await a.mesh.send({
+      context: sessionContext("ses_a", "/tmp/planner"),
+      to: "reviewer",
+      text: "timeout probe",
+    })
+    assert.equal(result.status, "ambiguous")
+    assert.match(result.detail, /timed out after 25ms/)
+    assert.deepEqual(await fs.readdir(config.processedDir).catch(() => []), [])
+  })
+
+  it("defers a busy session without consuming a retry attempt", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10, busyDeferMs: 1, maxBusyDefers: 3 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    let attempts = 0
+    let deferred: Record<string, unknown> | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => {
+        attempts += 1
+        if (attempts === 1) throw new SessionBusyError("ses_b")
+        deferred = await readJson<Record<string, unknown>>(
+          path.join(inbox, `${message.id}.json.taken`),
+        )
+        await gate
+      },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    const starting = watcher.start()
+    await waitFor(() => attempts === 2)
+    assert.equal(deferred?.["_busyDeferCount"], 1)
+    assert.equal(deferred?.["_retryCount"], undefined)
+    release()
+    await starting
+    const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
+    assert.equal(ack?.["status"], "accepted")
+  })
+
+  it("dead-letters a session that no longer exists", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { throw new SessionNotFoundError("ses_b") },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    const deadFile = path.join(inbox, "dead", `${message.id}.json`)
+    await waitFor(async () => (await fs.readdir(path.join(inbox, "dead"))).includes(`${message.id}.json`))
+    const dead = await readJson<Record<string, unknown>>(deadFile)
+    assert.equal((dead?.["_deadLetter"] as Record<string, unknown>)["attempts"], 1)
+    const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
+    assert.equal(ack?.["status"], "failed")
+  })
+
+  it("marks a message ambiguous after too many busy defers", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10, busyDeferMs: 1, maxBusyDefers: 2 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const message = leaseMessage()
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { throw new SessionBusyError("ses_b") },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    await watcher.start()
+    const ackFile = path.join(config.acksDir, `${message.id}.json`)
+    await waitFor(async () => (await fs.readdir(config.acksDir)).includes(`${message.id}.json`))
+    const ack = await readJson<Record<string, unknown>>(ackFile)
+    assert.equal(ack?.["status"], "ambiguous")
   })
 
   it("rejects unknown recipients, self-sends and oversized text", async () => {

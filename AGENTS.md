@@ -42,6 +42,7 @@ There is **no daemon, no port, no lock**. All coordination happens through one h
 <home>/agents/<id>.json        one record, written ONLY by its owner
 <home>/inbox/<id>/<msgid>.json messages for <id>, written by senders
 <home>/acks/<msgid>.json       delivery ack, written by the recipient
+<home>/processed/<msgid>.json local recipient marker after successful injection
 ```
 
 Correctness rests on facts that are easy to break accidentally:
@@ -56,6 +57,8 @@ Correctness rests on facts that are easy to break accidentally:
   files as normal and return `undefined` — peers come and go; discovery must never throw.
 - **Claiming is `rename` to `*.json.taken`** (at-most-once injection). Orphaned claims from a
   crashed process are restored on watcher start (`InboxWatcher.recoverClaimed`).
+- **Local processed markers suppress replay after a successful injection.** They are recipient-owned
+  state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
   (`store.touch`). `pidAlive` makes a killed opencode stale immediately instead of after 60s.
 - **Message ids are ULIDs prefixed `agm_`, monotonic per process** (`src/ids.ts`). FIFO ordering

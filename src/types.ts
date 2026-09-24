@@ -60,20 +60,53 @@ export type MeshMessage = {
   in_reply_to?: string
   replyDepth?: number
   _retryCount?: number
+  _busyDeferCount?: number
   sentAt: string
 }
 
-/** Written by the recipient once the message is injected into its session. */
+export type MeshAckStatus = "accepted" | "failed" | "ambiguous"
+
+/** Written by the recipient once the message is accepted or becomes ambiguous. */
 export type MeshAck = {
   id: string
   to: string
   sessionID: string
-  status: "injected" | "failed"
+  status: MeshAckStatus
   detail?: string
   at: string
 }
 
-export type SendStatus = "accepted" | "queued" | "failed"
+export type SendStatus = "accepted" | "queued" | "failed" | "ambiguous"
+
+export class PromptTimeoutError extends Error {
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number) {
+    super(`OpenCode prompt timed out after ${timeoutMs}ms`)
+    this.name = "PromptTimeoutError"
+    this.timeoutMs = timeoutMs
+  }
+}
+
+export class SessionBusyError extends Error {
+  readonly sessionID: string
+
+  constructor(sessionID: string) {
+    super(`OpenCode session ${sessionID} is busy`)
+    this.name = "SessionBusyError"
+    this.sessionID = sessionID
+  }
+}
+
+export class SessionNotFoundError extends Error {
+  readonly sessionID: string
+
+  constructor(sessionID: string) {
+    super(`OpenCode session ${sessionID} was not found`)
+    this.name = "SessionNotFoundError"
+    this.sessionID = sessionID
+  }
+}
 
 export class MeshError extends Error {
   readonly code: string

@@ -41,11 +41,12 @@ ${identity}
    why, and every fact it must know (paths, names, the contract you agreed on).
 
 3. **Sending is not asking.** \`${TOOL_SEND}\` returns a delivery status
-   (\`accepted\` = OpenCode returned 204 and accepted the message into the peer's
-   session, \`queued\` = it is waiting for the peer, \`failed\` = it did not land),
-   never the peer's answer. Accepted does not mean the peer read the message or
-   that the model answered. If you want a reply, ask for one in the text. It
-   arrives later as a new turn — keep working in the meantime instead of idling.
+    (\`accepted\` = OpenCode returned 204 and accepted the message into the peer's
+   session, \`queued\` = it is waiting for the peer, \`failed\` = it did not land,
+   \`ambiguous\` = the delivery outcome is unknown), never the peer's answer.
+   Accepted does not mean the peer read the message or that the model answered.
+   If you want a reply, ask for one in the text. It arrives later as a new turn —
+   keep working in the meantime instead of idling.
 
 4. **Incoming messages look like this**, arriving as a user turn:
 

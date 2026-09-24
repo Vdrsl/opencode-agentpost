@@ -64,11 +64,14 @@ you send your first message, and gets three tools:
 
 A message sent to a peer that's offline stays in the durable inbox. The recipient's
 plugin watches it, claims it with a lease, retries failed injection up to
-`maxDeliveryAttempts`, and moves exhausted messages to `dead/`. `agentmesh_send`
-returns `accepted` after the recipient's OpenCode returns HTTP 204; that does not
-mean the peer read the message or answered. `queued` means the durable inbox write
-exists but no acknowledgement arrived before `ackWaitMs`; `failed` means the
-recipient reported an injection error.
+`maxDeliveryAttempts`, and moves exhausted messages to `dead/`. Busy sessions are
+deferred separately up to `maxBusyDefers`; prompt timeouts and exhausted busy
+defers become `ambiguous`. `agentmesh_send` returns `accepted` after the
+recipient's OpenCode accepts the asynchronous prompt; that does not mean the peer
+read the message or answered. `queued` means the durable inbox write exists but
+no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
+reported a terminal injection error; `ambiguous` means the delivery outcome is
+not known and the caller must not blindly resend.
 
 ```
 [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…
@@ -91,12 +94,16 @@ Every agent's plugin instance coordinates through one shared home directory
 <home>/inbox/<id>/dead/<msgid>.json  messages that exhausted delivery attempts
 <home>/inbox/<id>/quarantine/<msgid>.invalid  critical malformed messages
 <home>/acks/<msgid>.json        delivery confirmation, written by the recipient
+<home>/processed/<msgid>.json  local recipient marker after successful injection
 ```
 
 Each agent only ever writes its own record and its own acks, and a sender only
-ever writes into the recipient's inbox — so there is nothing to lock. Liveness
-is a heartbeat (file mtime) plus a process check, so a killed opencode shows
-up as stale immediately rather than lingering.
+ever writes into the recipient's inbox — so there is nothing to lock. After a
+successful injection, the recipient records a local `processed/<msgid>.json`
+marker; a restart can use it to avoid re-injecting an orphaned claim. This is
+local replay suppression, not exactly-once delivery. Liveness is a heartbeat
+(file mtime) plus a process check, so a killed opencode shows up as stale
+immediately rather than lingering.
 
 If your agents run on different machines, point `AGENTMESH_HOME` (see below)
 at a directory synced or shared between them (e.g. a network mount).
@@ -116,6 +123,9 @@ variable that overrides it (env > plugin options > defaults):
 | `staleAfterMs`        | `AGENTMESH_STALE_AFTER_MS`        | `60000`                                                                    | No heartbeat for this long → agent shows as `stale`.                                 |
 | `expireAfterMs`       | `AGENTMESH_EXPIRE_AFTER_MS`       | `300000`                                                                   | No heartbeat for this long → agent's record is dropped entirely.                     |
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
+| `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `5000`                                                                     | Delay before retrying a busy OpenCode session.                                      |
+| `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before delivery becomes `ambiguous`.                                    |
+| `promptTimeoutMs`     | `AGENTMESH_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
 | `pollIntervalMs`      | `AGENTMESH_POLL_INTERVAL_MS`      | `2000`                                                                     | Inbox poll interval, as a fallback for missed filesystem events.                     |
 | `maxTextLength`       | `AGENTMESH_MAX_TEXT_LENGTH`       | `8000`                                                                     | Maximum message body length, in characters.                                          |
 | `leaseDurationMs`     | `AGENTMESH_LEASE_DURATION_MS`     | `60000`                                                                    | Claim lease duration before recovery may retry a message.                            |
