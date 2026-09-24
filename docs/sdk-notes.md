@@ -132,3 +132,7 @@ crash between asynchronous prompt acceptance and marker creation remains inheren
 ## Boundary conclusion for Iteration 3
 
 `promptAsync` HTTP success proves that the asynchronous request was accepted by the OpenCode endpoint. It does not prove that the model completed, that a reply exists, or that the user turn remains available after a crash. Busy and not-found responses are observable through `result.error` and session status APIs. The next iteration can use these verified contracts; Iteration 3.0 does not change delivery semantics.
+
+## Tool schema validation
+
+The installed `@opencode-ai/plugin` 1.18.32 exposes Zod through `tool.schema`. Runtime probing confirmed that string schemas provide `.min()`, `.max()`, and `.regex()`, so tool arguments can enforce the documented identifier format before `execute()` runs.

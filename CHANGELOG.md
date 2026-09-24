@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Improved tool descriptions and system prompt
+
+- Clarify ambiguous delivery handling, secret-safe messaging, reply-depth limits, and message examples.
+- Validate `id` and `to` tool arguments and add `systemPrompt()` regression coverage.
+
 ## v0.5.0 — Observability and test hardening
 
 - Add structured JSON-line logging with `off`, `info`, and `debug` levels, safe allowlisted fields, and a deprecated `AGENTMESH_DEBUG=1` fallback.

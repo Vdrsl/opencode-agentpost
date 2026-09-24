@@ -11,11 +11,13 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
 import type { Mesh, SessionContext } from "./mesh.ts"
 
-const REGISTER_DESCRIPTION = `Publish this agent on the mesh so other opencode agents can discover and message it.
-Call it once near the start of a session, and again whenever your role or scope changes.
-id: a stable short slug other agents will address you by — usually the project name.
-description: one line covering what you do and which repo/area you own; peers read this to decide what to send you.
-metadata: free-form string map shown to peers, the only context they have about you before any message. Put durable facts here: project path, stack, role, current focus.
+const REGISTER_DESCRIPTION = `Publish this agent on the mesh so other opencode agents can discover and message it. Call it once near the start of a session, and again whenever your role or scope changes.
+
+Arguments:
+- id: stable short slug peers address you by. Example: "api-gateway".
+- description: one line covering what you do and which repo/area you own. Example: "Owns the REST API in /repo/api; handles auth and rate limiting."
+- metadata: free-form string map shown to peers. Example: {"repo": "/repo/api", "stack": "node+express", "role": "backend", "focus": "auth module"}.
+
 Returns your own entry plus everyone else currently on the mesh.`
 
 const PEERS_DESCRIPTION = `List the agents on the mesh with live state: id, description, metadata, status (alive/stale), lastSeen, directory.
@@ -48,7 +50,13 @@ export function buildTools(
       args: {
         id: tool.schema
           .string()
-          .describe("Stable lowercase slug peers address you by, e.g. 'api-gateway'."),
+          .min(2)
+          .max(64)
+          .regex(/^[a-z0-9][a-z0-9_-]*$/)
+          .describe(
+            "Stable lowercase slug peers address you by, e.g. 'api-gateway'. " +
+              "2-64 chars of [a-z0-9_-], must start with [a-z0-9].",
+          ),
         description: tool.schema
           .string()
           .describe("One line: what you do and which repo/area you own."),
@@ -99,7 +107,12 @@ export function buildTools(
     [TOOL_SEND]: tool({
       description: SEND_DESCRIPTION,
       args: {
-        to: tool.schema.string().describe(`Agent id from ${TOOL_PEERS}.`),
+        to: tool.schema
+          .string()
+          .min(2)
+          .max(64)
+          .regex(/^[a-z0-9][a-z0-9_-]*$/)
+          .describe(`Agent id from ${TOOL_PEERS}. 2-64 chars of [a-z0-9_-].`),
         text: tool.schema
           .string()
           .describe("Self-contained message. Include every fact the peer needs."),

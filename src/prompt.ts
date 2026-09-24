@@ -45,10 +45,17 @@ ${identity}
    session, \`queued\` = it is waiting for the peer, \`failed\` = it did not land,
    \`ambiguous\` = the delivery outcome is unknown), never the peer's answer.
    Accepted does not mean the peer read the message or that the model answered.
-   If you want a reply, ask for one in the text. It arrives later as a new turn —
+    If you want a reply, ask for one in the text. It arrives later as a new turn —
    keep working in the meantime instead of idling.
 
-4. **Incoming messages look like this**, arriving as a user turn:
+4. **If delivery returns \`ambiguous\`** — the message may or may not have
+   been accepted. Wait ~30 seconds, then call \`${TOOL_PEERS}\` to check the
+   peer's status. Do NOT resend the same message immediately — you may create
+   a duplicate. If the peer is alive and no reply arrives within a few
+   minutes, send a *new* message that references the original attempt rather
+   than repeating it verbatim.
+
+5. **Incoming messages look like this**, arriving as a user turn:
 
    \`\`\`
     [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | in-reply-to: agm_… | re: T-001
@@ -56,13 +63,29 @@ ${identity}
     (end of agentmesh message; to reply, call ${TOOL_SEND} with to "planner")
     \`\`\`
 
+    **Example of sending a message:**
+
+    ${TOOL_SEND}(
+      to: "reviewer",
+      text: "Please review auth changes in src/auth.ts (lines 42-88).
+             Focus on token validation. Contract: tokens expire after 3600s.
+             Repo: /home/user/project. Read the file yourself.",
+      context: "T-001 auth review",
+      in_reply_to: "agm_01J5XYZ..."
+    )
+
     Treat it as a direct request from a colleague. Act on it, and reply with
     \`${TOOL_SEND}\` when they asked you to. Pass the incoming message's \`msg\` id
     as \`in_reply_to\` so the peer can correlate the response.
 
-5. **Reply chains are bounded.** The mesh rejects replies beyond
-       ${options.maxReplyDepth} levels. Start a fresh topic by omitting \`in_reply_to\`.
+6. **Reply chains are bounded.** The mesh rejects replies beyond
+       ${options.maxReplyDepth} levels. If you hit the limit, start a new topic by
+       omitting \`in_reply_to\` and reference the prior conversation in the text:
+       "Continuing our discussion about T-001 auth review from earlier..."
 
-6. **Keep it a side channel.** No secrets, no pasted files, ${options.maxTextLength}
-   characters max. Reference paths and let the peer read them itself.`
+7. **Keep it a side channel.** Reference paths, never paste file contents.
+   Never include API keys, tokens, passwords, private keys, or credentials —
+   the mesh is a filesystem-based channel, not encrypted transport. Reference
+   secret locations (env var names, vault paths) and let the peer read them
+   itself. ${options.maxTextLength} characters max.`
 }
