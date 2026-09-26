@@ -1,6 +1,6 @@
-# opencode-agentmesh
+# @vdrsl/opencode-agentmesh
 
-[![license](https://img.shields.io/npm/l/opencode-agentmesh.svg)](https://github.com/Vdrsl/opencode-agentmesh-private/blob/main/LICENSE)
+[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentmesh.svg)](https://github.com/Vdrsl/opencode-agentmesh-private/blob/main/LICENSE)
 
 Peer-to-peer messaging between [opencode](https://opencode.ai) agents running in
 different sessions, directories, or even different servers.
@@ -16,7 +16,7 @@ folder.
 
 If you run multiple opencode sessions side by side — one per repo, one per
 service, one for planning and others for implementation — they have no way to
-coordinate. `opencode-agentmesh` gives each session three tools so they can
+coordinate. `@vdrsl/opencode-agentmesh` gives each session three tools so they can
 find each other and talk, without you copy-pasting between terminals.
 
 ## Install
@@ -28,7 +28,7 @@ per-project):
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-agentmesh"
+    "@vdrsl/opencode-agentmesh"
   ]
 }
 ```
@@ -42,7 +42,7 @@ tuple form:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "opencode-agentmesh",
+      "@vdrsl/opencode-agentmesh",
       {
         "id": "api-gateway"
       }
@@ -203,6 +203,23 @@ npm pack --dry-run  # verifies the published file set
 
 See [AGENTS.md](./AGENTS.md) for architecture notes and conventions if you're
 contributing.
+
+## Credits
+
+This is a fork of [`opencode-agentmesh`](https://www.npmjs.com/package/opencode-agentmesh)
+by **Abdulkadir Polat** (npm: `polatdev`), MIT licensed. His work is the base of
+everything here, and the original copyright is kept in [LICENSE](./LICENSE).
+
+What this fork changed:
+
+- `idleMs` on every peer plus an `activity/<id>` marker, so a chat nobody opened
+  for days no longer looks like a busy one, and peers are listed freshest first.
+- A busy session no longer loses a message: past `maxBusyDefers` the recipient
+  tells the sender `ambiguous` and keeps the message queued for the next idle.
+- One sweep reaps orphan inboxes, activity markers and replay markers, all behind
+  retention windows.
+- A CI matrix on Node 22 and 24, Dependabot, and a crash-boundary test matrix
+  (C1–C6) around claim, handler, acknowledgement and recovery failures.
 
 ## License
 

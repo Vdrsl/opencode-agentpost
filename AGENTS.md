@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`opencode-agentmesh` — an opencode **plugin** (not an MCP server, not an app) that gives
+`@vdrsl/opencode-agentmesh` — an opencode **plugin** (not an MCP server, not an app) that gives
 opencode sessions in different directories/servers peer-to-peer messaging. Published to npm
 from `src/` → `dist/`. Entrypoint: `src/index.ts` (default export `AgentMesh: Plugin`).
 
@@ -97,8 +97,8 @@ Correctness rests on facts that are easy to break accidentally:
   prompts. They are behavioural spec, not comments — edit them with the same care as code.
 - Config precedence: `AGENTMESH_*` env > plugin options > defaults (`resolveConfig`, `src/config.ts`).
 - Structured logging is opt-in with `AGENTMESH_LOG_LEVEL=off|info|debug`; output is JSON lines with fixed events and allowlisted numeric/boolean fields. `AGENTMESH_DEBUG=1` is a deprecated info fallback.
-- Installed by users as `{ "plugin": ["opencode-agentmesh"] }`, or with options as
-  `{ "plugin": [["opencode-agentmesh", { "id": "…" }]] }`.
+- Installed by users as `{ "plugin": ["@vdrsl/opencode-agentmesh"] }`, or with options as
+  `{ "plugin": [["@vdrsl/opencode-agentmesh", { "id": "…" }]] }`.
 
 ## Testing notes
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.0 — Rename and attribution
+
+- Rename the package to `@vdrsl/opencode-agentmesh`, because the unscoped name belongs to the original author. Installs must switch to the scoped name; nothing else changed.
+- Credit the original author in `README.md` and keep the original copyright in `LICENSE`, as MIT requires.
+
 ## v0.7.0 — Cleanup
 
 - Remove `activity/<id>` in `Registry.unregister()`, so the owner deletes its own activity marker and the record reaper takes it with it.
