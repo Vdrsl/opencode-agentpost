@@ -621,6 +621,10 @@ describe("mesh", () => {
     assert.equal(peers.at(-1)?.status, "stale")
     const ancient = peers.find((peer) => peer.id === "ancient")
     assert.ok((ancient?.idleMs ?? 0) >= 3_600_000)
+    // Every peer names the chat it lives in, so two ids in one directory are
+    // distinguishable even when their records look identical.
+    assert.equal(peers.find((peer) => peer.id === "twin-a")?.sessionID, "ses_twin-a")
+    assert.equal(peers.find((peer) => peer.id === "twin-b")?.sessionID, "ses_twin-b")
   })
 
   it("queues for an agent that is registered but not listening", async () => {

@@ -203,6 +203,7 @@ export class Mesh {
             lastSeen: new Date().toISOString(),
             idleMs: 0,
             directory: record.routing.directory,
+            sessionID: record.routing.sessionID,
             self: true,
           },
       peers: entries

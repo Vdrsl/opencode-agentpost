@@ -41,6 +41,11 @@ ${identity}
    that chat. Send to the smallest \`idleMs\` that fits the task. If every peer
    that could own the work has been idle for hours, the session is unattended:
    say so in your final answer instead of dropping a question into a dead chat.
+   Each peer also carries \`sessionID\` — the opencode chat behind it. Two ids in
+   the same directory are two different chats, and a chat that was closed keeps
+   answering \`alive\` for a while (its record lives until it is reaped) but never
+   replies. If a peer accepts a message and stays silent, treat it as a closed
+   chat and move on to the next one instead of resending.
 
 3. **Messages carry no shared context.** The peer sees only the text you send —
    not your conversation, files, or task. Write self-contained: what you need,

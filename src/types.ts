@@ -48,6 +48,12 @@ export type PeerView = {
   /** Ms since this session's last turn, from `<home>/activity/<id>`. */
   idleMs: number
   directory: string
+  /**
+   * The opencode session behind this record. Two ids can share a directory while
+   * being different chats, and a session that was closed leaves a record behind
+   * until it is reaped — this is what tells the two apart.
+   */
+  sessionID: string
   self?: true
 }
 

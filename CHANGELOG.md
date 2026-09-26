@@ -4,6 +4,7 @@
 
 - Rename the package to `@vdrsl/opencode-agentmesh`, because the unscoped name belongs to the original author. Installs must switch to the scoped name; nothing else changed.
 - Credit the original author in `README.md` and keep the original copyright in `LICENSE`, as MIT requires.
+- Add `sessionID` to every peer, so an agent can tell two chats in one directory apart and stop waiting for a closed one.
 
 ## v0.7.0 — Cleanup
 

@@ -183,6 +183,8 @@ describe("registry", () => {
     assert.ok((entry?.activityMtimeMs ?? 0) <= backdate + 1_000)
     const view = registry.toPeerView(entry!, "me")
     assert.ok(view.idleMs >= 5 * 60_000, `idleMs was ${view.idleMs}`)
+    // The chat behind the record: several ids in one directory are several chats.
+    assert.equal(view.sessionID, "ses_1")
   })
 
   it("falls back to the record mtime when no activity marker exists", async () => {

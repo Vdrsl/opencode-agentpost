@@ -307,6 +307,7 @@ export class Registry {
       lastSeen: new Date(entry.mtimeMs).toISOString(),
       idleMs: ageMs(entry.activityMtimeMs, now),
       directory: entry.record.routing.directory,
+      sessionID: entry.record.routing.sessionID,
     }
     if (entry.record.id === selfId) view.self = true
     return view
