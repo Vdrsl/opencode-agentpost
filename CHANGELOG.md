@@ -6,6 +6,7 @@
 - Credit the original author in `README.md` and keep the original copyright in `LICENSE`, as MIT requires.
 - Add `sessionID` to every peer, so an agent can tell two chats in one directory apart and stop waiting for a closed one.
 - Auto-registered agents are now named `adjective-noun` (`quiet-otter`) hashed from their `sessionID`, instead of the directory name plus `-2`, `-3` suffixes. Deterministic, so a name survives a restart of opencode; set `id` to pin one yourself.
+- Tell the model what to do when a peer vanishes mid-send: re-read `agentmesh_peers` and try once more, because a restarted session comes back under a new name.
 
 ## v0.7.0 — Cleanup
 
