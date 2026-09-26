@@ -5,7 +5,9 @@
  * plugin watches that directory and injects the envelope into its own session
  * with its own authenticated client — so a message crosses opencode servers,
  * passwords and restarts without the sender needing any of that. A message
- * sent to an agent that is currently down simply waits until it comes back.
+ * sent to an agent that is currently down simply waits until it comes back. The
+ * same is true of a session that is busy: it defers, and if it stays busy past
+ * `maxBusyDefers` it only tells the sender "ambiguous" — never drops the message.
  */
 
 import { watch, type FSWatcher } from "node:fs"
@@ -490,6 +492,10 @@ export class InboxWatcher {
         this.onError(error, "session_busy", { attempt, defers })
         await new Promise((resolve) => setTimeout(resolve, this.config.busyDeferMs))
         if (defers >= this.config.maxBusyDefers) {
+          // Past the threshold the sender is told the outcome is unknown, but
+          // the message is not dropped: it goes back on the queue and lands as
+          // soon as the session frees up. A busy session is a slow session.
+          this.onError(error, "message_deferred_busy", { defers })
           await writeAck(this.config, {
             id: message.id,
             to: this.id,
@@ -498,8 +504,6 @@ export class InboxWatcher {
             detail: `session remained busy after ${defers} defers`,
             at: new Date().toISOString(),
           })
-          await removeFile(claimed)
-          return
         }
         const deferred = withoutInternalFields(message)
         deferred["_busyDeferCount"] = defers

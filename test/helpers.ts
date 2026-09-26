@@ -49,3 +49,12 @@ export async function waitFor(
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
 }
+
+/**
+ * Message files in an inbox, ignoring directories. An atomic write can leave a
+ * `.tmp` scratch file behind on Windows, so assertions about "nothing left"
+ * must look at messages, not at the raw directory listing.
+ */
+export async function messageFiles(dir: string): Promise<string[]> {
+  return (await fs.readdir(dir).catch(() => [])).filter((name) => name.endsWith(".json"))
+}

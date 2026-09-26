@@ -65,8 +65,10 @@ you send your first message, and gets three tools:
 A message sent to a peer that's offline stays in the durable inbox. The recipient's
 plugin watches it, claims it with a lease, retries failed injection up to
 `maxDeliveryAttempts`, and moves exhausted messages to `dead/`. Busy sessions are
-deferred separately up to `maxBusyDefers`; prompt timeouts and exhausted busy
-defers become `ambiguous`. `agentmesh_send` returns `accepted` after the
+deferred separately; past `maxBusyDefers` the sender is told the outcome is
+`ambiguous`, but the message stays in the inbox and is injected when the session
+goes idle. Prompt timeouts are `ambiguous` and are not retried.
+`agentmesh_send` returns `accepted` after the
 recipient's OpenCode accepts the asynchronous prompt; that does not mean the peer
 read the message or answered. `queued` means the durable inbox write exists but
 no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
@@ -131,8 +133,8 @@ variable that overrides it (env > plugin options > defaults):
 | `expireAfterMs`       | `AGENTMESH_EXPIRE_AFTER_MS`       | `300000`                                                                   | No heartbeat for this long → agent's record is dropped entirely.                     |
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
 | `ackRetentionMs`      | `AGENTMESH_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
-| `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `5000`                                                                     | Delay before retrying a busy OpenCode session.                                      |
-| `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before delivery becomes `ambiguous`.                                    |
+| `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `2000`                                                                     | Delay before retrying a busy OpenCode session. A busy peer is a slow peer: the message is never dropped, it waits in the inbox. |
+| `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before the sender is told delivery became `ambiguous`. The message itself is never dropped. |
 | `promptTimeoutMs`     | `AGENTMESH_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
 | `pollIntervalMs`      | `AGENTMESH_POLL_INTERVAL_MS`      | `2000`                                                                     | Inbox poll interval, as a fallback for missed filesystem events.                     |
 | `maxTextLength`       | `AGENTMESH_MAX_TEXT_LENGTH`       | `8000`                                                                     | Maximum message body length, in characters.                                          |

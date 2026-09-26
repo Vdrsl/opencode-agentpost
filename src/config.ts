@@ -103,7 +103,7 @@ const DEFAULTS = {
   expireAfterMs: 300_000,
   ackWaitMs: 3_000,
   ackRetentionMs: 300_000,
-  busyDeferMs: 5_000,
+  busyDeferMs: 2_000,
   maxBusyDefers: 12,
   promptTimeoutMs: 30_000,
   pollIntervalMs: 2_000,
@@ -153,6 +153,7 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   const config: MeshConfig = {
     home,
     agentsDir: path.join(home, "agents"),
+    activityDir: path.join(home, "activity"),
     inboxDir: path.join(home, "inbox"),
     acksDir: path.join(home, "acks"),
     processedDir: path.join(home, "processed"),
