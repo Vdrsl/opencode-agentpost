@@ -1075,11 +1075,14 @@ describe("mesh", () => {
       Boolean(await readJson(path.join(config.acksDir, `${message.id}.json`)).catch(() => null)),
     )
     busy = false
-    await waitFor(() => injected.length === 1)
-    const ack = await readJson<Record<string, unknown>>(
-      path.join(config.acksDir, `${message.id}.json`),
+    // Wait for the accepted ack, not for the handler: the handler runs before
+    // the ack is written, so reading it straight after the injection is a race.
+    await waitFor(async () =>
+      (await readJson<Record<string, unknown>>(
+        path.join(config.acksDir, `${message.id}.json`),
+      ).catch(() => null))?.["status"] === "accepted",
     )
-    assert.equal(ack?.["status"], "accepted")
+    assert.deepEqual(injected, [message.id])
     assert.deepEqual(await messageFiles(inbox), [])
     await watcher.stop()
     await starting
