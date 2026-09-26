@@ -82,6 +82,7 @@ export type MeshConfig = {
   processedDir: string
   deadDir: string
   quarantineDir: string
+  outboxDir: string
   id?: string
   hostId: string
   autoRegister: boolean
@@ -174,6 +175,7 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
     processedDir: path.join(home, "processed"),
     deadDir: path.join(home, "dead"),
     quarantineDir: path.join(home, "quarantine"),
+    outboxDir: path.join(home, "outbox"),
     id: pick(envString("AGENTMESH_ID"), options.id),
     hostId: pick(envString("AGENTMESH_HOST_ID"), options.hostId, os.hostname()) as string,
     autoRegister: pick(

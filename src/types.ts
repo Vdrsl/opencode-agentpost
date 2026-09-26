@@ -67,6 +67,8 @@ export type MeshMessage = {
   context?: string
   in_reply_to?: string
   replyDepth?: number
+  /** Id of the thread root. Absent on messages written before threads existed. */
+  threadId?: string
   _retryCount?: number
   _busyDeferCount?: number
   sentAt: string

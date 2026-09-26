@@ -14,8 +14,17 @@ import { randomUUID } from "node:crypto"
 import { assertValidId, type MeshConfig, slugify } from "./config.ts"
 import type { Logger } from "./logger.ts"
 import { renderEnvelope } from "./envelope.ts"
-import { enqueue, inboxDirFor, InboxWatcher, readProcessedDepth, reapAcks, waitForAck } from "./inbox.ts"
+import {
+  enqueue,
+  inboxDirFor,
+  InboxWatcher,
+  readProcessedDepth,
+  readProcessedThreadId,
+  reapAcks,
+  waitForAck,
+} from "./inbox.ts"
 import { isMessageId, newMessageId } from "./ids.ts"
+import { sweepOutbox, writeOutboxEntry } from "./outbox.ts"
 import { Registry } from "./registry.ts"
 import {
   type AgentRouting,
@@ -108,6 +117,10 @@ export class Mesh {
       if (expired) this.deps.logger("info", "expired_messages_cleaned", { count: expired })
       const reaped = await this.registry.cleanupProcessed(now)
       if (reaped) this.deps.logger("info", "processed_cleaned", { count: reaped })
+      const outbox = await sweepOutbox(this.config, now)
+      if (outbox.reconciled) this.deps.logger("info", "outbox_reconciled", { count: outbox.reconciled })
+      if (outbox.marked) this.deps.logger("info", "outbox_aged", { count: outbox.marked })
+      if (outbox.removed) this.deps.logger("info", "outbox_cleaned", { count: outbox.removed })
     } catch {
       this.deps.logger("error", "sweep_failed")
     }
@@ -314,6 +327,15 @@ export class Mesh {
     return readProcessedDepth(this.config, parentId)
   }
 
+  /**
+   * The thread a reply belongs to: the root our own marker remembers, or the
+   * parent itself when it predates threads. A missing marker is not an error —
+   * the parent is a safe root, it just forks a thread from the middle.
+   */
+  private async resolveThreadId(parentId: string): Promise<string> {
+    return (await readProcessedThreadId(this.config, parentId)) ?? parentId
+  }
+
   async send(input: {
     context: SessionContext
     to: string
@@ -374,53 +396,54 @@ export class Mesh {
       )
     }
 
+    const id = newMessageId()
     const message: MeshMessage = {
       schemaVersion: 1,
-      id: newMessageId(),
+      id,
       from,
       to: input.to,
       text: input.text,
       replyDepth,
+      // A thread is just its root message id, so no coordination is needed: a
+      // reply inherits it and every participant agrees without asking anyone.
+      threadId: input.in_reply_to ? await this.resolveThreadId(input.in_reply_to) : id,
       sentAt: new Date().toISOString(),
     }
     if (input.context_tag) message.context = input.context_tag
     if (input.in_reply_to) message.in_reply_to = input.in_reply_to
     await enqueue(this.config, message)
+    const record = { id, to: input.to, threadId: message.threadId }
+    await writeOutboxEntry(this.config, {
+      ...record,
+      state: "queued",
+      at: message.sentAt,
+    })
 
     const ack = await waitForAck(this.config, message.id, this.config.ackWaitMs, input.to)
+    let status: SendStatus
+    let detail: string
     if (ack?.status === "accepted") {
-      return {
-        to: input.to,
-        messageId: message.id,
-        status: "accepted",
-        detail: `accepted into ${input.to}'s session as a new user turn`,
-      }
-    }
-    if (ack?.status === "ambiguous") {
-      return {
-        to: input.to,
-        messageId: message.id,
-        status: "ambiguous",
-        detail: ack.detail ?? `${input.to}'s delivery outcome is unknown`,
-      }
-    }
-    if (ack?.status === "failed") {
-      return {
-        to: input.to,
-        messageId: message.id,
-        status: "failed",
-        detail: `${input.to} received the message but could not inject it: ${ack.detail ?? "unknown error"}`,
-      }
-    }
-    return {
-      to: input.to,
-      messageId: message.id,
-      status: "queued",
-      detail:
+      status = "accepted"
+      detail = `accepted into ${input.to}'s session as a new user turn`
+    } else if (ack?.status === "ambiguous") {
+      status = "ambiguous"
+      detail = ack.detail ?? `${input.to}'s delivery outcome is unknown`
+    } else if (ack?.status === "failed") {
+      status = "failed"
+      detail =
+        `${input.to} received the message but could not inject it: ` +
+        (ack.detail ?? "unknown error")
+    } else {
+      status = "queued"
+      detail =
         target?.status === "alive"
           ? `queued in ${input.to}'s inbox; no confirmation within ${this.config.ackWaitMs}ms`
-          : `${input.to} is ${target?.status ?? "offline"}; the message waits in its inbox until it comes back`,
+          : `${input.to} is ${target?.status ?? "offline"}; the message waits in its inbox until it comes back`
     }
+    // The inbox copy is the recipient's to delete, but what it did to us is
+    // ours to keep: the ack outlives neither the answer nor our own memory.
+    await writeOutboxEntry(this.config, { ...record, state: status, at: new Date().toISOString() })
+    return { to: input.to, messageId: id, status, detail }
   }
 
   /** Called by our own inbox watcher: put the envelope into our session. */

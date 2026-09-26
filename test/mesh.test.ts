@@ -8,9 +8,10 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { after, describe, it } from "node:test"
 
-import { parseEnvelope } from "../src/envelope.ts"
-import { enqueue, InboxWatcher, readAck, readProcessedDepth } from "../src/inbox.ts"
+import { parseEnvelope, renderEnvelope } from "../src/envelope.ts"
+import { enqueue, InboxWatcher, readAck, readProcessedDepth, readProcessedThreadId } from "../src/inbox.ts"
 import { newMessageId } from "../src/ids.ts"
+import { readOutboxEntry, sweepOutbox, writeOutboxEntry } from "../src/outbox.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
 import { noopLogger } from "../src/logger.ts"
@@ -655,6 +656,189 @@ describe("mesh", () => {
       path.join(config.processedDir, `${message.id}.json`),
     )
     assert.equal(marker?.depth, 3)
+  })
+
+  it("carries the thread root from the injected message into its marker", async () => {
+    const { config, a } = await twoAgents()
+    await a.mesh.register({
+      context: sessionContext("ses_a", "/tmp/planner"),
+      id: "planner",
+      description: "plans",
+    })
+    const root = newMessageId()
+    const message = {
+      ...leaseMessageWithId(root),
+      to: "planner",
+      from: "reviewer",
+      replyDepth: 1,
+      threadId: root,
+    }
+    await enqueue(config, message)
+
+    await waitFor(async () => (await readProcessedThreadId(config, root)) === root)
+  })
+
+  it("gives a thread reply the root its own marker remembers", async () => {
+    const { config, a, b } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    const bContext = sessionContext("ses_b", "/tmp/reviewer")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    await b.mesh.register({ context: bContext, id: "reviewer", description: "reviews" })
+
+    const request = await a.mesh.send({ context: aContext, to: "reviewer", text: "please review" })
+    assert.equal(request.status, "accepted")
+    const response = await b.mesh.send({
+      context: bContext,
+      to: "planner",
+      text: "on it",
+      in_reply_to: request.messageId,
+    })
+
+    // The reply joins the thread of the message it answers, not a new one: the
+    // root is whatever the reviewer's own marker recorded for the request.
+    await waitFor(async () => (await readProcessedThreadId(config, response.messageId)) ===
+      request.messageId)
+  })
+
+  it("falls back to the parent id when the marker predates threads", async () => {
+    const { config, a, b } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    const bContext = sessionContext("ses_b", "/tmp/reviewer")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    await b.mesh.register({ context: bContext, id: "reviewer", description: "reviews" })
+    const parentId = newMessageId()
+    await enqueue(config, { ...leaseMessageWithId(parentId), to: "reviewer", from: "planner" })
+
+    const response = await b.mesh.send({
+      context: bContext,
+      to: "planner",
+      text: "old parent",
+      in_reply_to: parentId,
+    })
+
+    // No marker for it yet, so the parent itself becomes the root — a fork
+    // mid-conversation, not a lost link.
+    await waitFor(async () => (await readProcessedThreadId(config, response.messageId)) === parentId)
+  })
+
+  it("shows the thread on a reply envelope but not on the root", () => {
+    const root = renderEnvelope({
+      ...leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+      threadId: "agm_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    })
+    assert.equal(root.includes("thread:"), false)
+    const reply = renderEnvelope({
+      ...leaseMessageWithId("agm_01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+      threadId: "agm_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    })
+    assert.equal(reply.includes("thread: agm_01ARZ3NDEKTSV4RRFFQ69G5FAV"), true)
+  })
+
+  it("keeps the sender's own outbox entry for a sent message", async () => {
+    const { config, a, b } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    const bContext = sessionContext("ses_b", "/tmp/reviewer")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    await b.mesh.register({ context: bContext, id: "reviewer", description: "reviews" })
+
+    const sent = await a.mesh.send({ context: aContext, to: "reviewer", text: "ping" })
+    assert.equal(sent.status, "accepted")
+
+    // The inbox copy is already deleted by the recipient and the ack is reaped
+    // within minutes, so the sender's own entry is the only place the state
+    // of this message survives.
+    assert.deepEqual(await readOutboxEntry(config, sent.messageId), {
+      id: sent.messageId,
+      to: "reviewer",
+      threadId: sent.messageId,
+      state: "accepted",
+      at: (await readOutboxEntry(config, sent.messageId))?.at,
+    })
+  })
+
+  it("refuses to walk a finished outbox state backwards", async () => {
+    const { config } = await twoAgents()
+    const entry = { id: newMessageId(), to: "reviewer", at: new Date().toISOString() }
+    await writeOutboxEntry(config, { ...entry, state: "accepted" })
+    await writeOutboxEntry(config, { ...entry, state: "queued" })
+    assert.equal((await readOutboxEntry(config, entry.id))?.state, "accepted")
+  })
+
+  it("marks a verdictless outbox entry undeliverable, then retires it", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { messageRetentionMs: 1_000 })
+    const entry = { id: newMessageId(), to: "gone", at: new Date().toISOString() }
+    await writeOutboxEntry(config, { ...entry, state: "queued" })
+    const file = path.join(config.outboxDir, `${entry.id}.json`)
+    const old = new Date(Date.now() - 60_000)
+    await fs.utimes(file, old, old)
+
+    // The recipient was gone, not the message, so the entry says so before it
+    // goes away one window later. The rewrite bumps mtime, so the verdict
+    // itself survives a full window.
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 1, removed: 0 })
+    assert.equal((await readOutboxEntry(config, entry.id))?.state, "undeliverable")
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 0, removed: 0 })
+    await fs.utimes(file, old, old)
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 0, removed: 1 })
+    assert.equal(await readOutboxEntry(config, entry.id), undefined)
+  })
+
+  it("reconciles a queued entry once the ack lands after ackWaitMs", async () => {
+    // The regular busy case: the recipient accepts long after send() gave up
+    // waiting, so only the sweep can move the sender's state forward.
+    const home = await tempHome()
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const config = testConfig(home, {
+      messageRetentionMs: 1_000,
+      busyDeferMs: 1,
+      maxBusyDefers: 2,
+    })
+    const message = { ...leaseMessage(), to: "reviewer" }
+    await writeOutboxEntry(config, {
+      id: message.id,
+      to: "reviewer",
+      state: "queued",
+      at: message.sentAt,
+    })
+    await enqueue(config, message)
+    let attempts = 0
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => {
+        attempts += 1
+        if (attempts === 1) throw new SessionBusyError("ses_b")
+      },
+      () => {},
+    )
+    cleanups.push(() => watcher.stop())
+    const starting = watcher.start()
+    await waitFor(async () => (await readAck(config, message.id))?.status === "accepted")
+    assert.equal((await readOutboxEntry(config, message.id))?.state, "queued")
+
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 1, marked: 0, removed: 0 })
+    assert.equal((await readOutboxEntry(config, message.id))?.state, "accepted")
+    // A second sweep finds the ack already reflected, so nothing moves twice.
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 0, removed: 0 })
+    await watcher.stop()
+    await starting
+  })
+
+  it("deletes a finished outbox entry once it is old enough", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { messageRetentionMs: 1_000 })
+    const entry = { id: newMessageId(), to: "reviewer", at: new Date().toISOString() }
+    await writeOutboxEntry(config, { ...entry, state: "failed" })
+    const file = path.join(config.outboxDir, `${entry.id}.json`)
+    const old = new Date(Date.now() - 60_000)
+    await fs.utimes(file, old, old)
+
+    assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 0, removed: 1 })
+    assert.equal(await readOutboxEntry(config, entry.id), undefined)
   })
 
   it("reads an older processed marker without a depth as zero", async () => {

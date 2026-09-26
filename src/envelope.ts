@@ -28,6 +28,9 @@ export function renderEnvelope(message: MeshMessage): string {
   if (message.context) {
     header += ` | re: ${sanitizeHeaderField(message.context, MAX_CONTEXT_LENGTH)}`
   }
+  // The root of a thread carries threadId === id, which says nothing the msg id
+  // does not, so it is only shown on replies.
+  if (message.threadId && message.threadId !== message.id) header += ` | thread: ${message.threadId}`
   if (message.in_reply_to) header += ` | in-reply-to: ${message.in_reply_to}`
   const footer = `to reply, call ${TOOL_SEND} with to "${from}"`
   return `${header}\n${message.text}\n(end of agentmesh message; ${footer})`

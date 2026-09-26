@@ -79,11 +79,13 @@ async function writeProcessedMarker(
   config: MeshConfig,
   messageId: string,
   depth: number,
+  threadId?: string,
 ): Promise<void> {
   await writeJsonAtomic(processedPath(config, messageId), {
     id: messageId,
     at: new Date().toISOString(),
     depth,
+    threadId,
   })
 }
 
@@ -98,6 +100,22 @@ export async function readProcessedDepth(config: MeshConfig, messageId: string):
   const marker = await readJson<{ depth?: unknown }>(processedPath(config, messageId))
   const depth = marker?.depth
   return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
+}
+
+/**
+ * Which thread a message we injected belonged to, or undefined when the marker
+ * predates threads. Read from our own marker for the same ownership reason as
+ * the depth: the sender's copy is not ours, and the inbox copy is gone.
+ */
+export async function readProcessedThreadId(
+  config: MeshConfig,
+  messageId: string,
+): Promise<string | undefined> {
+  if (!isMessageId(messageId)) return undefined
+  const marker = await readJson<{ threadId?: unknown }>(processedPath(config, messageId))
+  return typeof marker?.threadId === "string" && isMessageId(marker.threadId)
+    ? marker.threadId
+    : undefined
 }
 
 async function quarantineFile(file: string, directory: string, name: string): Promise<void> {
@@ -121,6 +139,11 @@ function busyDeferCount(message: MeshMessage | undefined): number {
 function replyDepthOf(message: MeshMessage | undefined): number {
   const depth = message?.replyDepth
   return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
+}
+
+function threadIdOf(message: MeshMessage | undefined): string | undefined {
+  const threadId = message?.threadId
+  return typeof threadId === "string" && isMessageId(threadId) ? threadId : undefined
 }
 
 function withoutInternalFields(message: MeshMessage): Record<string, unknown> {
@@ -490,7 +513,7 @@ export class InboxWatcher {
     try {
       await this.handler(withoutInternalFields(message) as MeshMessage)
       await runCrashHook(this.crashHooks.afterHandler)
-      await writeProcessedMarker(this.config, message.id, replyDepthOf(message))
+      await writeProcessedMarker(this.config, message.id, replyDepthOf(message), threadIdOf(message))
       await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await runCrashHook(this.crashHooks.afterAck)
       await removeFile(claimed)

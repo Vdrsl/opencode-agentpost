@@ -47,6 +47,7 @@ There is **no daemon, no port, no lock**. All coordination happens through one h
 <home>/quarantine/<id>/        malformed messages, written by the recipient
 <home>/acks/<msgid>.json       delivery ack, written by the recipient
 <home>/processed/<msgid>.json local recipient marker after successful injection
+<home>/outbox/<msgid>.json      the sender's own copy: state of one sent message
 ```
 
 Correctness rests on facts that are easy to break accidentally:
@@ -76,6 +77,18 @@ Correctness rests on facts that are easy to break accidentally:
   deleted the moment delivery succeeds, so reading depth from it always returned 0 and let a reply
   chain grow without bound. `deliverOne` stamps the depth into the processed marker and
   `readProcessedDepth` reads it back; a marker without `depth` is 0.
+- **A thread is its root message id, carried in the same processed marker.** `threadId` on a reply
+  comes from the recipient's own marker (`readProcessedThreadId`), falling back to the parent id when
+  the parent predates threads — which forks a thread mid-conversation rather than losing the link.
+  No coordination exists by design: everyone derives the same root from the id chain.
+- **The sender keeps `<home>/outbox/<msgid>.json`, and only the sender writes it.** The inbox is the
+  recipient's copy and an ack lives only for `ackRetentionMs`, so without an outbox a sender forgets
+  its own message within minutes. The state is *what we last heard*, never an assumption, and
+  `writeOutboxEntry` refuses to walk a finished state backwards. `sweepOutbox` takes the ack as the
+  word on the outcome — a busy recipient acks long after `ackWaitMs` gave up, and only the sweep
+  can move a delivered message off `queued` — and turns an entry that never got a verdict into
+  `undeliverable` before deleting it a window later: the recipient was gone, not the message. Any
+  new per-message state follows this split, not a shared file.
 - **Activity is a separate `utimes` file, `<home>/activity/<id>`.** It is touched on every
   `chat.message` and `session.idle`, never a rewrite of `agents/<id>.json` — a rewrite would
   open a rename window where a peer's `list()` sees ENOENT and the peer vanishes. Peers read it
@@ -97,7 +110,8 @@ Correctness rests on facts that are easy to break accidentally:
   messages that landed while the process was down. Don't remove the poll.
 - **Cleanup is conservative on purpose.** One sweep per minute (`Mesh.tick`, `REAP_INTERVAL_MS`)
   runs `registry.reap`, `reapAcks`, `cleanupOrphanedInboxes`, `cleanupExpiredMessages`,
-  `cleanupProcessed`. Deletion rules: `agents/<id>.json` goes after `presenceReapMs` of silence;
+  `cleanupProcessed`, `sweepOutbox`. Deletion rules: `agents/<id>.json` goes after
+  `presenceReapMs` of silence;
   `activity/<id>` goes only in `Registry.unregister()` (which `reap` also goes through);
   `inbox/<id>` goes only from `cleanupOrphanedInboxes`, only when the agent has no record, the
   inbox is empty, and its mtime is older than `queueRetentionMs`. `unregisterSession()` must never
@@ -105,7 +119,8 @@ Correctness rests on facts that are easy to break accidentally:
   non-empty inbox is undelivered work. Individual messages in `inbox/`, `dead/` and `quarantine/`
   are dropped by mtime after `messageRetentionMs`, which is the only bound on queued mail.
   `processed/<msgid>.json` is reaped by mtime after `processedRetentionMs`, which is exactly how
-  long replay suppression lasts.
+  long replay suppression lasts. `outbox/<msgid>.json` is aged on the `messageRetentionMs` window:
+  finished entries go, unfinished ones become `undeliverable` first.
 
 ## Plugin-specific gotchas
 

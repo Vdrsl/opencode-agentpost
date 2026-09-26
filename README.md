@@ -114,7 +114,8 @@ Every agent's plugin instance coordinates through one shared home directory
 <home>/dead/<id>/<msgid>.json  messages that exhausted delivery attempts
 <home>/quarantine/<id>/<msgid>.invalid  critical malformed messages
 <home>/acks/<msgid>.json        delivery confirmation, written by the recipient
-<home>/processed/<msgid>.json  local recipient marker after successful injection
+<home>/processed/<msgid>.json  local recipient marker: injected, with depth and thread
+<home>/outbox/<msgid>.json     the sender's own copy: state of one sent message
 ```
 
 Each agent only ever writes its own record and its own acks, and a sender only
@@ -124,6 +125,16 @@ marker; a restart can use it to avoid re-injecting an orphaned claim. This is
 local replay suppression, not exactly-once delivery. Liveness is a heartbeat
 (file mtime) plus a process check, so a killed opencode shows up as stale
 immediately rather than lingering.
+
+The inbox is the recipient's copy and an ack lives only for `ackRetentionMs`, so
+the sender keeps its own `<home>/outbox/<msgid>.json` entry instead of forgetting
+a message within minutes. It records what we last heard — `queued`, `accepted`,
+`failed`, `ambiguous`, or `undeliverable` once the message itself has been
+reaped — and never walks a finished state backwards. A sweep reconciles it with
+the ack, so a message a busy recipient accepted after the sender stopped
+waiting still ends up `accepted`. A conversation is just its
+root message id: a reply carries the same `threadId` it inherited, and every
+participant agrees on it without coordinating.
 
 A live process is not the same as a human at the keyboard, so every agent also
 gets an `activity/<id>` file touched on each session turn. Peers report it as
@@ -198,6 +209,10 @@ next to the record reaper and each step is deliberately conservative:
 - `processed/<msgid>.json` markers are reaped after `processedRetentionMs` (24
   hours by default), which bounds replay suppression to that window. Lower it if
   you accept that a message injected longer ago may be injected again.
+- `outbox/<msgid>.json` entries are aged on the same `messageRetentionMs` window
+  as the message itself: a finished entry is deleted, and one that never got a
+  verdict is rewritten as `undeliverable` — the recipient was gone, not the
+  message — and dropped one window later.
 
 ## Security and limitations
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.0 — Phase 2: Delivery state
+
+- Add `threadId` to every message: a thread is its root message id, and a reply inherits the root its own `processed/<msgid>.json` marker remembers, so the same id chain is on both sides without coordination. Replies show `| thread: agm_…` in the envelope header.
+- The sender now keeps `<home>/outbox/<msgid>.json` — one file per sent message, written only by its owner, recording what we last heard: `queued`, `accepted`, `failed`, `ambiguous`, or `undeliverable`. Without it a sender forgets its own message as soon as the ack is reaped, and there is no way to tell a delivered message from one that bounced.
+- `writeOutboxEntry` refuses to walk a finished state backwards, so a late `queued` cannot undo a verdict the recipient already gave.
+- `sweepOutbox` runs in the same sweep as everything else: it reconciles each entry with the ack the recipient eventually wrote, deletes a finished entry once it is old enough, and turns one that never got a verdict into `undeliverable` before dropping it a window later — the recipient was gone, not the message.
+
 ## v0.9.0 — Phase 1: Addressability ≠ Presence
 
 - Decouple `send()` addressability from presence: an id is accepted while its record exists **or** its `inbox/<id>/` directory does, so mail to a peer that closed its window queues instead of failing with `E_NO_AGENT`. `stale` now only means "not heartbeating right now".
