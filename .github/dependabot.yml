@@ -1,11 +1,14 @@
-# Dependabot version updates. The only ecosystem here is npm: the manifest and
-# its lockfile live at the repo root, and the repo has no GitHub Actions
-# workflows yet. Add a "github-actions" entry when it does.
+# Dependabot version updates: the npm manifest and its lockfile live at the repo
+# root, and .github/workflows holds the only actions in the repo.
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
 updates:
   - package-ecosystem: "npm" # @opencode-ai/plugin, typescript, @types/node
     directory: "/" # package.json + package-lock.json
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/" # .github/workflows
     schedule:
       interval: "weekly"
