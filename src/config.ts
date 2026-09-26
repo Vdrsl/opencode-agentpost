@@ -42,6 +42,10 @@ export type MeshOptions = {
   /** How long `agentmesh_send` waits for the peer to confirm injection. */
   ackWaitMs?: number
   ackRetentionMs?: number
+  /** How long an empty inbox of a gone agent is kept before deletion. */
+  queueRetentionMs?: number
+  /** How long a processed marker suppresses replay before it is reaped. */
+  processedRetentionMs?: number
   /** How long a busy session is deferred before another attempt. */
   busyDeferMs?: number
   /** Maximum busy defers before a message becomes ambiguous. */
@@ -82,6 +86,8 @@ export type MeshConfig = {
   expireAfterMs: number
   ackWaitMs: number
   ackRetentionMs: number
+  queueRetentionMs: number
+  processedRetentionMs: number
   busyDeferMs: number
   maxBusyDefers: number
   promptTimeoutMs: number
@@ -103,6 +109,8 @@ const DEFAULTS = {
   expireAfterMs: 300_000,
   ackWaitMs: 3_000,
   ackRetentionMs: 300_000,
+  queueRetentionMs: 300_000,
+  processedRetentionMs: 86_400_000,
   busyDeferMs: 2_000,
   maxBusyDefers: 12,
   promptTimeoutMs: 30_000,
@@ -194,6 +202,16 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.ackRetentionMs,
       DEFAULTS.ackRetentionMs,
     ) as number,
+    queueRetentionMs: pick(
+      envNumber("AGENTMESH_QUEUE_RETENTION_MS"),
+      options.queueRetentionMs,
+      DEFAULTS.queueRetentionMs,
+    ) as number,
+    processedRetentionMs: pick(
+      envNumber("AGENTMESH_PROCESSED_RETENTION_MS"),
+      options.processedRetentionMs,
+      DEFAULTS.processedRetentionMs,
+    ) as number,
     busyDeferMs: pick(
       envNumber("AGENTMESH_BUSY_DEFER_MS"),
       options.busyDeferMs,
@@ -276,6 +294,22 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   }
   if (config.ackRetentionMs > 86_400_000) {
     throw new Error("AgentMesh config: ackRetentionMs must be at most 86400000ms")
+  }
+  if (!Number.isFinite(config.queueRetentionMs) || config.queueRetentionMs <= 0) {
+    throw new Error(
+      "AgentMesh config: queueRetentionMs must be a finite number greater than zero",
+    )
+  }
+  if (config.queueRetentionMs > 86_400_000) {
+    throw new Error("AgentMesh config: queueRetentionMs must be at most 86400000ms")
+  }
+  if (!Number.isFinite(config.processedRetentionMs) || config.processedRetentionMs <= 0) {
+    throw new Error(
+      "AgentMesh config: processedRetentionMs must be a finite number greater than zero",
+    )
+  }
+  if (config.processedRetentionMs > 604_800_000) {
+    throw new Error("AgentMesh config: processedRetentionMs must be at most 604800000ms")
   }
   if (!Number.isFinite(config.busyDeferMs) || config.busyDeferMs <= 0) {
     throw new Error("AgentMesh config: busyDeferMs must be a finite number greater than zero")

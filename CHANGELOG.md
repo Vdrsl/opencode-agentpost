@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased — Improved tool descriptions and system prompt
+## v0.7.0 — Cleanup
+
+- Remove `activity/<id>` in `Registry.unregister()`, so the owner deletes its own activity marker and the record reaper takes it with it.
+- Add `queueRetentionMs` and `Registry.cleanupOrphanedInboxes()`: drop the inbox of a gone agent only when its record is gone, the inbox is empty, and it has been untouched for that long.
+- Add `processedRetentionMs` and `Registry.cleanupProcessed()`: age out `processed/<msgid>.json` replay markers by mtime instead of keeping them forever.
+- Run all three from the existing one-per-minute sweep, with `orphans_cleaned` and `processed_cleaned` log events.
+- Leave `unregisterSession()` deleting nothing: an id can be re-registered, and a non-empty inbox is undelivered work.
+
+## v0.6.0 — Improved tool descriptions and system prompt
 
 - Clarify ambiguous delivery handling, secret-safe messaging, reply-depth limits, and message examples.
 - Validate `id` and `to` tool arguments and add `systemPrompt()` regression coverage.

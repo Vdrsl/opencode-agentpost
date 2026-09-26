@@ -77,6 +77,14 @@ Correctness rests on facts that are easy to break accidentally:
   heartbeat/reap timer. Nothing may assume a single agent per process.
 - `fs.watch` is best-effort; `pollIntervalMs` is the safety net for events macOS drops and for
   messages that landed while the process was down. Don't remove the poll.
+- **Cleanup is conservative on purpose.** One sweep per minute (`Mesh.tick`, `REAP_INTERVAL_MS`)
+  runs `registry.reap`, `reapAcks`, `cleanupOrphanedInboxes`, `cleanupProcessed`. Deletion rules:
+  `activity/<id>` goes only in `Registry.unregister()` (which `reap` also goes through);
+  `inbox/<id>` goes only from `cleanupOrphanedInboxes`, only when the agent has no record, the
+  inbox is empty, and its mtime is older than `queueRetentionMs`. `unregisterSession()` must never
+  delete an inbox — the id can be re-registered by the next session in that directory, and a
+  non-empty inbox is undelivered work. `processed/<msgid>.json` is reaped by mtime after
+  `processedRetentionMs`, which is exactly how long replay suppression lasts.
 
 ## Plugin-specific gotchas
 

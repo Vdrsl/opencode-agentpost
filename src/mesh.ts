@@ -98,8 +98,14 @@ export class Mesh {
     this.lastReap = now
     try {
       const removed = await this.registry.reap(now)
-       if (removed.length) this.deps.logger("info", "agents_reaped", { count: removed.length })
+      if (removed.length) this.deps.logger("info", "agents_reaped", { count: removed.length })
       await reapAcks(this.config, now)
+      const cleaned = await this.registry.cleanupOrphanedInboxes(now)
+      if (cleaned.length) {
+        this.deps.logger("info", "orphans_cleaned", { count: cleaned.length })
+      }
+      const reaped = await this.registry.cleanupProcessed(now)
+      if (reaped) this.deps.logger("info", "processed_cleaned", { count: reaped })
     } catch {
       this.deps.logger("error", "sweep_failed")
     }
@@ -162,15 +168,15 @@ export class Mesh {
         (message) => this.receive(routing, message),
         (_error, event, fields) => this.deps.logger("error", event, fields),
       )
-       this.agents.set(routing.sessionID, {
-         id: record.id,
-         routing,
-         watcher,
-         ownerInstance: record.ownerInstance,
-         incarnation: record.incarnation,
-       })
-       await watcher.start()
-     } else {
+      this.agents.set(routing.sessionID, {
+        id: record.id,
+        routing,
+        watcher,
+        ownerInstance: record.ownerInstance,
+        incarnation: record.incarnation,
+      })
+      await watcher.start()
+    } else {
        this.agents.set(routing.sessionID, {
          id: record.id,
          routing,

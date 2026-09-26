@@ -25,6 +25,7 @@ import {
   listJsonFiles,
   pidAlive,
   readJsonWithMtime,
+  removeDir,
   removeFile,
   touch,
   writeJsonAtomic,
@@ -201,6 +202,7 @@ export class Registry {
       throw new MeshError(ErrorCode.FENCED, `id ${JSON.stringify(id)} is owned by another instance`)
     }
     await removeFile(this.recordPath(id))
+    await removeFile(this.activityPath(id))
   }
 
   private async releaseOtherIdsOf(sessionID: string, keepId: string): Promise<void> {
@@ -240,6 +242,58 @@ export class Registry {
         throw error
       }
       removed.push(entry.record.id)
+    }
+    return removed
+  }
+
+  /**
+   * Drop the inbox of an agent that is gone for good. Only an inbox that is
+   * empty is a candidate: a non-empty one still holds messages someone must
+   * deliver, and a registered agent owns its inbox even while idle. Ageing
+   * matters too, because a peer can be between unregistering and coming back.
+   */
+  async cleanupOrphanedInboxes(now: number = Date.now()): Promise<string[]> {
+    const removed: string[] = []
+    let dirs: string[]
+    try {
+      dirs = await fs.readdir(this.config.inboxDir)
+    } catch {
+      return removed
+    }
+    for (const name of dirs) {
+      if (await this.get(name, now)) continue
+      try {
+        const inbox = this.inboxPath(name)
+        if ((await fs.readdir(inbox)).length > 0) continue
+        if (ageMs((await fs.stat(inbox)).mtimeMs, now) < this.config.queueRetentionMs) continue
+        await removeDir(inbox)
+      } catch {
+        continue
+      }
+      removed.push(name)
+    }
+    return removed
+  }
+
+  /**
+   * Age out the local processed markers. They exist to suppress a replay of a
+   * message we already injected, and one file is written per delivery, so
+   * without this they grow forever. Age comes from mtime, which is the moment
+   * the injection happened.
+   */
+  async cleanupProcessed(now: number = Date.now()): Promise<number> {
+    let removed = 0
+    for (const name of await listJsonFiles(this.config.processedDir)) {
+      const file = path.join(this.config.processedDir, name)
+      try {
+        if (ageMs((await fs.stat(file)).mtimeMs, now) < this.config.processedRetentionMs) {
+          continue
+        }
+        await removeFile(file)
+      } catch {
+        continue
+      }
+      removed += 1
     }
     return removed
   }

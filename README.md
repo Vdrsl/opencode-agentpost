@@ -91,6 +91,7 @@ Every agent's plugin instance coordinates through one shared home directory
 
 ```
 <home>/agents/<id>.json         one record per agent, written only by its owner
+<home>/activity/<id>            last session turn, touched only by <id>
 <home>/inbox/<id>/<msgid>.json  pending messages for <id>, written by senders
 <home>/inbox/<id>/<msgid>.json.taken  active lease claim, with _claim metadata
 <home>/inbox/<id>/dead/<msgid>.json  messages that exhausted delivery attempts
@@ -133,6 +134,7 @@ variable that overrides it (env > plugin options > defaults):
 | `expireAfterMs`       | `AGENTMESH_EXPIRE_AFTER_MS`       | `300000`                                                                   | No heartbeat for this long → agent's record is dropped entirely.                     |
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
 | `ackRetentionMs`      | `AGENTMESH_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
+| `queueRetentionMs`    | `AGENTMESH_QUEUE_RETENTION_MS`    | `300000`                                                                   | How long an empty inbox of a gone agent is kept before deletion.                     |
 | `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `2000`                                                                     | Delay before retrying a busy OpenCode session. A busy peer is a slow peer: the message is never dropped, it waits in the inbox. |
 | `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before the sender is told delivery became `ambiguous`. The message itself is never dropped. |
 | `promptTimeoutMs`     | `AGENTMESH_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
@@ -144,6 +146,7 @@ variable that overrides it (env > plugin options > defaults):
 | `maxMessageBytes`     | `AGENTMESH_MAX_MESSAGE_BYTES`     | `32768`                                                                    | Maximum serialized size of one message.                                             |
 | `maxInboxBytes`       | `AGENTMESH_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
 | `maxReplyDepth`       | `AGENTMESH_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
+| `processedRetentionMs` | `AGENTMESH_PROCESSED_RETENTION_MS` | `86400000`                                                                | How long a `processed/<msgid>.json` marker suppresses replay before it is reaped.    |
 
 `AGENTMESH_LOG_LEVEL` controls structured stderr logging: `off` (default), `info`, or
 `debug`. Each enabled line is JSON with a timestamp, level, fixed event name, and
@@ -154,6 +157,21 @@ deprecated fallback that selects `info` when `AGENTMESH_LOG_LEVEL` is unset.
 Acknowledgement files are retained independently from agent records. `ackRetentionMs`
 defaults to five minutes and is capped at 24 hours; use it when a shared directory
 needs a longer audit window.
+
+### Cleanup
+
+The shared directory would grow forever otherwise, so a sweep runs once a minute
+next to the record reaper and each of the three is deliberately conservative:
+
+- `activity/<id>` is removed when the agent unregisters or its record is reaped —
+  the owner of that state deletes its own file.
+- `inbox/<id>` is removed only when the agent has no record **and** the inbox is
+  empty **and** it has been untouched for `queueRetentionMs`. A non-empty inbox is
+  never dropped, because those messages still have to be delivered, and the delay
+  covers an agent that unregisters and comes straight back under the same id.
+- `processed/<msgid>.json` markers are reaped after `processedRetentionMs` (24
+  hours by default), which bounds replay suppression to that window. Lower it if
+  you accept that a message injected longer ago may be injected again.
 
 ## Security and limitations
 
