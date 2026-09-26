@@ -75,11 +75,29 @@ async function writeAcceptedAck(
   })
 }
 
-async function writeProcessedMarker(config: MeshConfig, messageId: string): Promise<void> {
+async function writeProcessedMarker(
+  config: MeshConfig,
+  messageId: string,
+  depth: number,
+): Promise<void> {
   await writeJsonAtomic(processedPath(config, messageId), {
     id: messageId,
     at: new Date().toISOString(),
+    depth,
   })
+}
+
+/**
+ * How deep in a reply chain the message we injected was. The marker is
+ * recipient-owned state written at injection time, so it is the only place the
+ * depth survives: the inbox copy is gone the moment delivery succeeds, and the
+ * sender's copy is not ours to read.
+ */
+export async function readProcessedDepth(config: MeshConfig, messageId: string): Promise<number> {
+  if (!isMessageId(messageId)) return 0
+  const marker = await readJson<{ depth?: unknown }>(processedPath(config, messageId))
+  const depth = marker?.depth
+  return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
 }
 
 async function quarantineFile(file: string, directory: string, name: string): Promise<void> {
@@ -98,6 +116,11 @@ function retryCount(message: MeshMessage | undefined): number {
 function busyDeferCount(message: MeshMessage | undefined): number {
   const value = (message as unknown as Record<string, unknown> | undefined)?.["_busyDeferCount"]
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+function replyDepthOf(message: MeshMessage | undefined): number {
+  const depth = message?.replyDepth
+  return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
 }
 
 function withoutInternalFields(message: MeshMessage): Record<string, unknown> {
@@ -309,6 +332,19 @@ export class InboxWatcher {
     return inboxDirFor(this.config, this.id)
   }
 
+  /**
+   * Dead letters and quarantined files live outside `inbox/<id>/` on purpose: a
+   * non-empty subdirectory there would keep the inbox non-empty forever, and an
+   * inbox is only reaped when it is empty.
+   */
+  get deadDir(): string {
+    return path.join(this.config.deadDir, this.id)
+  }
+
+  get quarantineDir(): string {
+    return path.join(this.config.quarantineDir, this.id)
+  }
+
   async start(): Promise<void> {
     await ensureDir(this.dir)
     await this.recoverClaimed()
@@ -419,7 +455,7 @@ export class InboxWatcher {
     const validation = validateMessage(message, claimed, this.id, this.config.maxTextLength)
     if (!validation.ok) {
       try {
-        await quarantineFile(claimed, path.join(this.dir, "quarantine"), validation.name)
+        await quarantineFile(claimed, this.quarantineDir, validation.name)
         this.onError(new Error(validation.reason), "message_quarantined")
       } catch (error) {
         this.onError(error, "message_quarantine_failed")
@@ -431,7 +467,7 @@ export class InboxWatcher {
     if (schemaVersion !== undefined && schemaVersion !== 1) {
       const name = `${message.id}.json`
       try {
-        await quarantineFile(claimed, path.join(this.dir, "quarantine"), name)
+        await quarantineFile(claimed, this.quarantineDir, name)
         this.onError(
           new Error(`unsupported message schemaVersion ${JSON.stringify(schemaVersion)}`),
           "message_schema_unsupported",
@@ -454,7 +490,7 @@ export class InboxWatcher {
     try {
       await this.handler(withoutInternalFields(message) as MeshMessage)
       await runCrashHook(this.crashHooks.afterHandler)
-      await writeProcessedMarker(this.config, message.id)
+      await writeProcessedMarker(this.config, message.id, replyDepthOf(message))
       await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await runCrashHook(this.crashHooks.afterAck)
       await removeFile(claimed)
@@ -539,8 +575,7 @@ export class InboxWatcher {
     detail: string,
     attempt: number,
   ): Promise<void> {
-    const deadDir = path.join(this.dir, "dead")
-    const deadFile = path.join(deadDir, `${message.id}.json`)
+    const deadFile = path.join(this.deadDir, `${message.id}.json`)
     const record = withoutInternalFields(message)
     record["_deadLetter"] = {
       reason: detail,

@@ -133,7 +133,7 @@ describe("OpenCode boundary E2E", () => {
     const msg = message()
     const pending = path.join(f.inbox, `${msg.id}.json`)
     const ack = path.join(f.config.acksDir, `${msg.id}.json`)
-    const dead = path.join(f.inbox, "dead", `${msg.id}.json`)
+    const dead = path.join(f.config.deadDir, "reviewer", `${msg.id}.json`)
     const watcher = watcherFor(f.config, f.fake)
     try {
       await writeJsonAtomic(pending, msg)
@@ -173,7 +173,7 @@ describe("OpenCode boundary E2E", () => {
     const f = await fixture("server_error", { maxDeliveryAttempts: 2, pollIntervalMs: 10 })
     const msg = message()
     const pending = path.join(f.inbox, `${msg.id}.json`)
-    const dead = path.join(f.inbox, "dead", `${msg.id}.json`)
+    const dead = path.join(f.config.deadDir, "reviewer", `${msg.id}.json`)
     const watcher = watcherFor(f.config, f.fake)
     try {
       await writeJsonAtomic(pending, msg)
@@ -242,7 +242,7 @@ describe("OpenCode boundary E2E", () => {
     const f = await fixture("not_found")
     const msg = message()
     const pending = path.join(f.inbox, `${msg.id}.json`)
-    const dead = path.join(f.inbox, "dead", `${msg.id}.json`)
+    const dead = path.join(f.config.deadDir, "reviewer", `${msg.id}.json`)
     const watcher = watcherFor(f.config, f.fake)
     try {
       await writeJsonAtomic(pending, msg)

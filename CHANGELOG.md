@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 — Phase 1: Addressability ≠ Presence
+
+- Decouple `send()` addressability from presence: an id is accepted while its record exists **or** its `inbox/<id>/` directory does, so mail to a peer that closed its window queues instead of failing with `E_NO_AGENT`. `stale` now only means "not heartbeating right now".
+- Split `expireAfterMs` into `presenceReapMs` (record cleanup, 5 min) and `messageRetentionMs` (undelivered message TTL, 24 h). Presence is allowed to vanish; mail is not.
+- Move `dead/` and `quarantine/` out of `inbox/<id>/` to `<home>/dead/<id>/` and `<home>/quarantine/<id>/`, so one dead letter no longer keeps an inbox non-empty and blocks the orphan sweep forever.
+- Fix `replyDepth`: the depth of an injected message is stamped into the recipient-owned `processed/<msgid>.json` marker and read back from there. It used to be read from the sender's inbox, whose copy is deleted the moment delivery succeeds, so every reply looked like depth 0 and chains grew without bound.
+- Add `Registry.cleanupExpiredMessages()`: drop messages older than `messageRetentionMs` from `inbox/`, `dead/` and `quarantine/`.
+
 ## v0.8.0 — Rename and attribution
 
 - Rename the package to `@vdrsl/opencode-agentmesh`, because the unscoped name belongs to the original author. Installs must switch to the scoped name; nothing else changed.

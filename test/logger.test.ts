@@ -63,7 +63,7 @@ describe("logger and ack retention", () => {
         () => resolveConfig({ home, ackRetentionMs: 86_400_001 }),
         /ackRetentionMs must be at most 86400000ms/,
       )
-      const config = resolveConfig({ home, ackRetentionMs: 10, expireAfterMs: 120_000 })
+      const config = resolveConfig({ home, ackRetentionMs: 10, presenceReapMs: 120_000 })
       const ackFile = path.join(config.acksDir, "agm_01aaaaaaaaaaaaaaaaaaaaaaaa.json")
       await writeJsonAtomic(ackFile, { id: "agm_01aaaaaaaaaaaaaaaaaaaaaaaa", to: "peer", sessionID: "ses_a", status: "accepted", at: new Date().toISOString() })
       const old = new Date(Date.now() - 20)

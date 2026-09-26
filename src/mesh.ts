@@ -7,15 +7,15 @@
  * heartbeats them all and sweeps the dead ones.
  */
 
+import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 
 import { assertValidId, type MeshConfig, slugify } from "./config.ts"
 import type { Logger } from "./logger.ts"
 import { renderEnvelope } from "./envelope.ts"
-import { enqueue, inboxDirFor, InboxWatcher, reapAcks, waitForAck } from "./inbox.ts"
+import { enqueue, inboxDirFor, InboxWatcher, readProcessedDepth, reapAcks, waitForAck } from "./inbox.ts"
 import { isMessageId, newMessageId } from "./ids.ts"
-import { readJson } from "./store.ts"
 import { Registry } from "./registry.ts"
 import {
   type AgentRouting,
@@ -104,6 +104,8 @@ export class Mesh {
       if (cleaned.length) {
         this.deps.logger("info", "orphans_cleaned", { count: cleaned.length })
       }
+      const expired = await this.registry.cleanupExpiredMessages(now)
+      if (expired) this.deps.logger("info", "expired_messages_cleaned", { count: expired })
       const reaped = await this.registry.cleanupProcessed(now)
       if (reaped) this.deps.logger("info", "processed_cleaned", { count: reaped })
     } catch {
@@ -288,11 +290,28 @@ export class Mesh {
 
   // -------------------------------------------------------------- messaging
 
-  private async resolveReplyDepth(agentId: string, parentId: string): Promise<number> {
-    const file = path.join(inboxDirFor(this.config, agentId), `${parentId}.json`)
-    const parent = await readJson<MeshMessage>(file)
-    const depth = parent?.replyDepth
-    return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
+  /**
+   * Does this address have a mailbox? The directory survives the presence
+   * record, which is what makes mail to an agent that is away queue instead of
+   * bounce. A sender creates it on the first successful enqueue.
+   */
+  private async inboxDirExists(id: string): Promise<boolean> {
+    try {
+      await fs.stat(inboxDirFor(this.config, id))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * The depth we injected a message at. It comes from our own processed marker,
+   * not from the sender's inbox: that copy is deleted the moment delivery
+   * succeeds, which used to make every reply look like depth 0 and let a chain
+   * run forever.
+   */
+  private async resolveReplyDepth(parentId: string): Promise<number> {
+    return readProcessedDepth(this.config, parentId)
   }
 
   async send(input: {
@@ -330,7 +349,7 @@ export class Mesh {
 
     let replyDepth = 0
     if (input.in_reply_to) {
-      const parentDepth = await this.resolveReplyDepth(from, input.in_reply_to)
+      const parentDepth = await this.resolveReplyDepth(input.in_reply_to)
       if (parentDepth >= this.config.maxReplyDepth) {
         throw new MeshError(
           ErrorCode.REPLY_DEPTH_EXCEEDED,
@@ -340,8 +359,11 @@ export class Mesh {
       replyDepth = parentDepth + 1
     }
 
+    // Addressability is not presence. A record proves the address was used
+    // recently; the inbox directory proves it was used at all, and it outlives
+    // the record on purpose — mail for an agent that is away has to queue.
     const target = await this.registry.get(input.to)
-    if (!target) {
+    if (!target && !(await this.inboxDirExists(input.to))) {
       const known = (await this.peers({ sessionID: input.context.sessionID }))
         .map((peer) => peer.id)
         .join(", ")
@@ -395,9 +417,9 @@ export class Mesh {
       messageId: message.id,
       status: "queued",
       detail:
-        target.status === "alive"
+        target?.status === "alive"
           ? `queued in ${input.to}'s inbox; no confirmation within ${this.config.ackWaitMs}ms`
-          : `${input.to} is ${target.status}; the message waits in its inbox until it comes back`,
+          : `${input.to} is ${target?.status ?? "offline"}; the message waits in its inbox until it comes back`,
     }
   }
 

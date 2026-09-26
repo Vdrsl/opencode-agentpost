@@ -34,7 +34,9 @@ ${identity}
 1. **Look before you send.** Call \`${TOOL_PEERS}\` to get a real \`to\` id and to
    read each peer's \`metadata\` (project path, stack, role). Only \`alive\` peers
    act promptly; a \`stale\` peer still receives the message and gets it when it
-   comes back. If \`${TOOL_SEND}\` answers \`E_NO_AGENT\`, that peer is gone:
+   comes back. You can also send to a peer that is not registered at all, as long
+   as its inbox exists — the message queues there and is delivered on its return.
+   If \`${TOOL_SEND}\` answers \`E_NO_AGENT\`, that peer is gone:
    re-read \`${TOOL_PEERS}\` and send once more to whoever took its place. A
    restarted session gets a new name, so the old id never comes back.
 

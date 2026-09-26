@@ -75,6 +75,14 @@ no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
 reported a terminal injection error; `ambiguous` means the delivery outcome is
 not known and the caller must not blindly resend.
 
+Addressability is not presence. An id is accepted as long as either its
+`agents/<id>.json` record exists or its `inbox/<id>/` directory does, so mail to
+an agent whose opencode is closed queues instead of bouncing: the record is
+reaped after `presenceReapMs` (five minutes by default) but the mailbox outlives
+it, and `stale` only means "not heartbeating right now". The one address you
+cannot send to is an id that was never used, because there is nowhere to put the
+message.
+
 ```
 [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…
 review src/auth.ts please
@@ -103,8 +111,8 @@ Every agent's plugin instance coordinates through one shared home directory
 <home>/activity/<id>            last session turn, touched only by <id>
 <home>/inbox/<id>/<msgid>.json  pending messages for <id>, written by senders
 <home>/inbox/<id>/<msgid>.json.taken  active lease claim, with _claim metadata
-<home>/inbox/<id>/dead/<msgid>.json  messages that exhausted delivery attempts
-<home>/inbox/<id>/quarantine/<msgid>.invalid  critical malformed messages
+<home>/dead/<id>/<msgid>.json  messages that exhausted delivery attempts
+<home>/quarantine/<id>/<msgid>.invalid  critical malformed messages
 <home>/acks/<msgid>.json        delivery confirmation, written by the recipient
 <home>/processed/<msgid>.json  local recipient marker after successful injection
 ```
@@ -140,7 +148,8 @@ variable that overrides it (env > plugin options > defaults):
 | `injectSystemPrompt`  | `AGENTMESH_INJECT_SYSTEM_PROMPT`  | `true`                                                                     | Append the mesh protocol explanation to the system prompt.                           |
 | `heartbeatIntervalMs` | `AGENTMESH_HEARTBEAT_INTERVAL_MS` | `15000`                                                                    | How often a registered agent refreshes its liveness.                                 |
 | `staleAfterMs`        | `AGENTMESH_STALE_AFTER_MS`        | `60000`                                                                    | No heartbeat for this long → agent shows as `stale`.                                 |
-| `expireAfterMs`       | `AGENTMESH_EXPIRE_AFTER_MS`       | `300000`                                                                   | No heartbeat for this long → agent's record is dropped entirely.                     |
+| `presenceReapMs`      | `AGENTMESH_PRESENCE_REAP_MS`      | `300000`                                                                   | No heartbeat for this long → the presence record is dropped, the mailbox stays. Cap 24h. |
+| `messageRetentionMs`  | `AGENTMESH_MESSAGE_RETENTION_MS`  | `86400000`                                                                  | How long an undelivered message is kept in `inbox/`, `dead/` and `quarantine/` before it is dropped. Cap 7d. |
 | `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
 | `ackRetentionMs`      | `AGENTMESH_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
 | `queueRetentionMs`    | `AGENTMESH_QUEUE_RETENTION_MS`    | `300000`                                                                   | How long an empty inbox of a gone agent is kept before deletion.                     |
@@ -170,14 +179,22 @@ needs a longer audit window.
 ### Cleanup
 
 The shared directory would grow forever otherwise, so a sweep runs once a minute
-next to the record reaper and each of the three is deliberately conservative:
+next to the record reaper and each step is deliberately conservative:
 
+- `agents/<id>.json` records are reaped after `presenceReapMs` (five minutes
+  without a heartbeat). That only takes the agent out of the listing; its mailbox
+  stays, and its id keeps accepting mail.
 - `activity/<id>` is removed when the agent unregisters or its record is reaped —
   the owner of that state deletes its own file.
 - `inbox/<id>` is removed only when the agent has no record **and** the inbox is
   empty **and** it has been untouched for `queueRetentionMs`. A non-empty inbox is
   never dropped, because those messages still have to be delivered, and the delay
   covers an agent that unregisters and comes straight back under the same id.
+  `dead/` and `quarantine/` live outside the inbox, so a message that ended up
+  there cannot keep the inbox directory alive forever.
+- Individual messages in `inbox/`, `dead/` and `quarantine/` are dropped after
+  `messageRetentionMs` (24 hours by default). Since mail to an offline agent is
+  meant to wait, this is the only bound on how long undelivered work survives.
 - `processed/<msgid>.json` markers are reaped after `processedRetentionMs` (24
   hours by default), which bounds replay suppression to that window. Lower it if
   you accept that a message injected longer ago may be injected again.

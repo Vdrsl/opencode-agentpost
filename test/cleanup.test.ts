@@ -4,6 +4,8 @@ import path from "node:path"
 import { after, describe, it } from "node:test"
 
 import { Registry } from "../src/registry.ts"
+import { InboxWatcher } from "../src/inbox.ts"
+import { noopLogger } from "../src/logger.ts"
 import { type AgentRouting } from "../src/types.ts"
 import { newMessageId } from "../src/ids.ts"
 import { tempHome, testConfig } from "./helpers.ts"
@@ -64,7 +66,7 @@ describe("cleanup", () => {
     const marker = path.join(config.activityDir, "planner")
     assert.equal(await exists(marker), true)
 
-    const removed = await registry.reap(Date.now() + config.expireAfterMs + 1)
+    const removed = await registry.reap(Date.now() + config.presenceReapMs + 1)
     assert.deepEqual(removed, ["planner"])
     assert.equal(await exists(marker), false)
   })
@@ -142,5 +144,83 @@ describe("cleanup", () => {
   it("does not throw when the processed directory does not exist", async () => {
     const { registry } = await newRegistry()
     assert.equal(await registry.cleanupProcessed(), 0)
+  })
+
+  it("reaps a record past presenceReapMs but keeps the mailbox", async () => {
+    const { config, registry } = await newRegistry({ presenceReapMs: 1_000 })
+    await registry.register({ id: "planner", description: "d", routing: routing("ses_1") })
+    const inbox = path.join(config.inboxDir, "planner")
+    await fs.mkdir(inbox, { recursive: true })
+
+    const removed = await registry.reap(Date.now() + 1_001)
+    assert.deepEqual(removed, ["planner"])
+    // The record is presence state, the inbox is mail: the address survives.
+    assert.equal(await exists(inbox), true)
+  })
+
+  it("drops expired messages from inbox, dead and quarantine", async () => {
+    const { config, registry } = await newRegistry({ messageRetentionMs: 1_000 })
+    const written: string[] = []
+    for (const root of [config.inboxDir, config.deadDir, config.quarantineDir]) {
+      const dir = path.join(root, "planner")
+      await fs.mkdir(dir, { recursive: true })
+      const file = path.join(dir, `${newMessageId()}.json`)
+      await fs.writeFile(file, "{}")
+      await backdate(file, 60_000)
+      written.push(file)
+    }
+    // A claim in flight is not a message file and must survive the sweep.
+    const claimed = path.join(config.inboxDir, "planner", "agm_pending.json.taken")
+    await fs.writeFile(claimed, "{}")
+
+    assert.equal(await registry.cleanupExpiredMessages(), 3)
+    for (const file of written) assert.equal(await exists(file), false)
+    assert.equal(await exists(claimed), true)
+  })
+
+  it("keeps a queued message younger than messageRetentionMs", async () => {
+    const { config, registry } = await newRegistry({ messageRetentionMs: 3_600_000 })
+    const dir = path.join(config.inboxDir, "planner")
+    await fs.mkdir(dir, { recursive: true })
+    const file = path.join(dir, `${newMessageId()}.json`)
+    await fs.writeFile(file, "{}")
+
+    assert.equal(await registry.cleanupExpiredMessages(), 0)
+    assert.equal(await exists(file), true)
+  })
+
+  it("does not throw when the message directories do not exist", async () => {
+    const { registry } = await newRegistry()
+    assert.equal(await registry.cleanupExpiredMessages(), 0)
+  })
+
+  it("reaps an empty inbox even when the agent still has dead letters", async () => {
+    const { config, registry } = await newRegistry({ queueRetentionMs: 1_000 })
+    const inbox = path.join(config.inboxDir, "gone")
+    await fs.mkdir(inbox, { recursive: true })
+    await backdate(inbox, 60_000)
+    const dead = path.join(config.deadDir, "gone")
+    await fs.mkdir(dead, { recursive: true })
+    await fs.writeFile(path.join(dead, `${newMessageId()}.json`), "{}")
+
+    assert.deepEqual(await registry.cleanupOrphanedInboxes(), ["gone"])
+    assert.equal(await exists(inbox), false)
+    assert.equal((await fs.readdir(dead)).length, 1)
+  })
+
+  it("keeps dead letters and quarantined files outside the inbox", async () => {
+    const { config } = await newRegistry()
+    const watcher = new InboxWatcher(config, "planner", async () => {}, noopLogger)
+    const deadFile = path.join(watcher.deadDir, "agm_x.json")
+    await fs.mkdir(watcher.deadDir, { recursive: true })
+    await fs.writeFile(deadFile, "{}")
+    await fs.mkdir(watcher.quarantineDir, { recursive: true })
+    const badFile = path.join(watcher.quarantineDir, "agm_y.invalid")
+    await fs.writeFile(badFile, "broken")
+
+    assert.equal(await exists(deadFile), true)
+    assert.equal(await exists(badFile), true)
+    // Nothing landed inside inbox/<id>/, so the orphan sweep can still reap it.
+    assert.equal(await exists(path.join(config.inboxDir, "planner")), false)
   })
 })

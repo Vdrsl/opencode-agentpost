@@ -111,6 +111,20 @@ export async function listJsonFiles(dir: string): Promise<string[]> {
   }
 }
 
+/** Subdirectory names, sorted. Missing directory reads as empty. */
+export async function listDirs(root: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+  } catch (error) {
+    if (isMissing(error)) return []
+    throw error
+  }
+}
+
 export async function removeFile(file: string): Promise<void> {
   await fs.rm(file, { force: true }).catch(() => {})
 }

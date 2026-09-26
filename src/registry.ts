@@ -23,6 +23,7 @@ import { agentName } from "./names.ts"
 import {
   ageMs,
   ensureDir,
+  listDirs,
   listJsonFiles,
   pidAlive,
   readJsonWithMtime,
@@ -265,7 +266,7 @@ export class Registry {
   async reap(now: number = Date.now()): Promise<string[]> {
     const removed: string[] = []
     for (const entry of await this.list(now)) {
-      if (ageMs(entry.mtimeMs, now) < this.config.expireAfterMs) continue
+      if (ageMs(entry.mtimeMs, now) < this.config.presenceReapMs) continue
       try {
         await this.unregister(entry.record.id, ownerIdentity(entry.record))
       } catch (error) {
@@ -325,6 +326,34 @@ export class Registry {
         continue
       }
       removed += 1
+    }
+    return removed
+  }
+
+  /**
+   * Age out messages nobody ever picked up. Queueing must outlive presence —
+   * that is the whole point of the mailbox model — so an undelivered message
+   * cannot be reaped with the record. Without a TTL here, a peer that never
+   * comes back leaves its inbox forever and blocks cleanup of the directory.
+   */
+  async cleanupExpiredMessages(now: number = Date.now()): Promise<number> {
+    let removed = 0
+    for (const root of [this.config.inboxDir, this.config.deadDir, this.config.quarantineDir]) {
+      for (const agentId of await listDirs(root)) {
+        const dir = path.join(root, agentId)
+        for (const name of await listJsonFiles(dir)) {
+          const file = path.join(dir, name)
+          try {
+            if (ageMs((await fs.stat(file)).mtimeMs, now) < this.config.messageRetentionMs) {
+              continue
+            }
+            await removeFile(file)
+          } catch {
+            continue
+          }
+          removed += 1
+        }
+      }
     }
     return removed
   }

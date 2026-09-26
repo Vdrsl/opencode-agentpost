@@ -173,13 +173,13 @@ describe("registry", () => {
     assert.equal(await registry.allocateName("ses_3"), agentName("ses_3", 1))
   })
 
-  it("reaps records that expired and leaves fresh ones alone", async () => {
-    const registry = await newRegistry({ expireAfterMs: 0 })
+  it("reaps records past presenceReapMs and leaves fresh ones alone", async () => {
+    const registry = await newRegistry({ presenceReapMs: 1_000 })
     await registry.register({ id: "gone", description: "d", routing: routing("ses_1") })
-    assert.deepEqual(await registry.reap(), ["gone"])
+    assert.deepEqual(await registry.reap(Date.now() + 1_001), ["gone"])
     assert.equal(await registry.get("gone"), undefined)
 
-    const keeper = await newRegistry({ expireAfterMs: 60_000 })
+    const keeper = await newRegistry({ presenceReapMs: 3_600_000 })
     await keeper.register({ id: "here", description: "d", routing: routing("ses_1") })
     assert.deepEqual(await keeper.reap(), [])
   })

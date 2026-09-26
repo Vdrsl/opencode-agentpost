@@ -38,7 +38,10 @@ export type MeshOptions = {
   injectSystemPrompt?: boolean
   heartbeatIntervalMs?: number
   staleAfterMs?: number
-  expireAfterMs?: number
+  /** How long a presence record with no heartbeat is reaped. */
+  presenceReapMs?: number
+  /** How long an undelivered message is kept before it is dropped. */
+  messageRetentionMs?: number
   /** How long `agentmesh_send` waits for the peer to confirm injection. */
   ackWaitMs?: number
   ackRetentionMs?: number
@@ -77,13 +80,16 @@ export type MeshConfig = {
   inboxDir: string
   acksDir: string
   processedDir: string
+  deadDir: string
+  quarantineDir: string
   id?: string
   hostId: string
   autoRegister: boolean
   injectSystemPrompt: boolean
   heartbeatIntervalMs: number
   staleAfterMs: number
-  expireAfterMs: number
+  presenceReapMs: number
+  messageRetentionMs: number
   ackWaitMs: number
   ackRetentionMs: number
   queueRetentionMs: number
@@ -106,7 +112,8 @@ const DEFAULTS = {
   injectSystemPrompt: true,
   heartbeatIntervalMs: 15_000,
   staleAfterMs: 60_000,
-  expireAfterMs: 300_000,
+  presenceReapMs: 300_000,
+  messageRetentionMs: 86_400_000,
   ackWaitMs: 3_000,
   ackRetentionMs: 300_000,
   queueRetentionMs: 300_000,
@@ -165,6 +172,8 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
     inboxDir: path.join(home, "inbox"),
     acksDir: path.join(home, "acks"),
     processedDir: path.join(home, "processed"),
+    deadDir: path.join(home, "dead"),
+    quarantineDir: path.join(home, "quarantine"),
     id: pick(envString("AGENTMESH_ID"), options.id),
     hostId: pick(envString("AGENTMESH_HOST_ID"), options.hostId, os.hostname()) as string,
     autoRegister: pick(
@@ -187,10 +196,15 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.staleAfterMs,
       DEFAULTS.staleAfterMs,
     ) as number,
-    expireAfterMs: pick(
-      envNumber("AGENTMESH_EXPIRE_AFTER_MS"),
-      options.expireAfterMs,
-      DEFAULTS.expireAfterMs,
+    presenceReapMs: pick(
+      envNumber("AGENTMESH_PRESENCE_REAP_MS"),
+      options.presenceReapMs,
+      DEFAULTS.presenceReapMs,
+    ) as number,
+    messageRetentionMs: pick(
+      envNumber("AGENTMESH_MESSAGE_RETENTION_MS"),
+      options.messageRetentionMs,
+      DEFAULTS.messageRetentionMs,
     ) as number,
     ackWaitMs: pick(
       envNumber("AGENTMESH_ACK_WAIT_MS"),
@@ -274,14 +288,25 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   if (!Number.isFinite(config.staleAfterMs) || config.staleAfterMs <= 0) {
     throw new Error("AgentMesh config: staleAfterMs must be a finite number greater than zero")
   }
-  if (!Number.isFinite(config.expireAfterMs) || config.expireAfterMs <= 0) {
-    throw new Error("AgentMesh config: expireAfterMs must be a finite number greater than zero")
+  if (!Number.isFinite(config.presenceReapMs) || config.presenceReapMs <= 0) {
+    throw new Error("AgentMesh config: presenceReapMs must be a finite number greater than zero")
+  }
+  if (config.presenceReapMs > 86_400_000) {
+    throw new Error("AgentMesh config: presenceReapMs must be at most 86400000ms")
+  }
+  if (!Number.isFinite(config.messageRetentionMs) || config.messageRetentionMs <= 0) {
+    throw new Error(
+      "AgentMesh config: messageRetentionMs must be a finite number greater than zero",
+    )
+  }
+  if (config.messageRetentionMs > 604_800_000) {
+    throw new Error("AgentMesh config: messageRetentionMs must be at most 604800000ms")
   }
   if (
     config.heartbeatIntervalMs >= config.staleAfterMs ||
-    config.staleAfterMs >= config.expireAfterMs
+    config.staleAfterMs >= config.presenceReapMs
   ) {
-    throw new Error("AgentMesh config: heartbeatIntervalMs < staleAfterMs < expireAfterMs is required")
+    throw new Error("AgentMesh config: heartbeatIntervalMs < staleAfterMs < presenceReapMs is required")
   }
   if (!Number.isFinite(config.pollIntervalMs) || config.pollIntervalMs <= 0) {
     throw new Error("AgentMesh config: pollIntervalMs must be a finite number greater than zero")
@@ -339,9 +364,6 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
   }
   if (config.staleAfterMs > 600_000) {
     throw new Error("AgentMesh config: staleAfterMs must be at most 600000ms")
-  }
-  if (config.expireAfterMs > 3_600_000) {
-    throw new Error("AgentMesh config: expireAfterMs must be at most 3600000ms")
   }
   if (config.maxTextLength > 100_000) {
     throw new Error("AgentMesh config: maxTextLength must be at most 100000")

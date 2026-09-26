@@ -100,7 +100,7 @@ describe("security boundaries", () => {
       await watcher.start()
       await watcher.stop()
       assert.equal(
-        await fs.stat(path.join(inbox, "quarantine", `${msg.id}.invalid`)).then(() => true),
+        await fs.stat(path.join(config.quarantineDir, "reviewer", `${msg.id}.invalid`)).then(() => true),
         true,
       )
     })
@@ -122,7 +122,7 @@ describe("security boundaries", () => {
       )
       await watcher.start()
       await watcher.stop()
-      assert.equal(await fs.stat(path.join(inbox, "quarantine", `${msg.id}.invalid`)).then(() => true), true)
+      assert.equal(await fs.stat(path.join(config.quarantineDir, "reviewer", `${msg.id}.invalid`)).then(() => true), true)
     })
   })
 
@@ -142,7 +142,7 @@ describe("security boundaries", () => {
       )
       await watcher.start()
       await watcher.stop()
-      assert.equal(await fs.stat(path.join(inbox, "quarantine", `${msg.id}.invalid`)).then(() => true), true)
+      assert.equal(await fs.stat(path.join(config.quarantineDir, "reviewer", `${msg.id}.invalid`)).then(() => true), true)
     })
   })
 
@@ -251,7 +251,7 @@ describe("security boundaries", () => {
         noopLogger,
       )
       await watcher.start()
-      await waitFor(() => fs.stat(path.join(inbox, "quarantine", `${msg.id}.invalid`)).then(() => true))
+      await waitFor(() => fs.stat(path.join(config.quarantineDir, "reviewer", `${msg.id}.invalid`)).then(() => true))
       await watcher.stop()
       assert.equal(injected, 0)
     })

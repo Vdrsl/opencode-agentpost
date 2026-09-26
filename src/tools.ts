@@ -30,6 +30,7 @@ const SEND_DESCRIPTION = `Send one message to another registered agent. It is in
 This returns a delivery status, NOT the peer's answer: "accepted" (OpenCode returned 204 and accepted the message into the peer's session), "queued" (waiting for them to come back), "failed" (it could not be injected), "ambiguous" (the delivery outcome is unknown). Accepted does not mean the peer read the message or that the model answered.
 The peer sees NO context from your session — write self-contained: what you need, why, and every referenced fact (absolute paths, agreed contract). To get an answer, ask for one explicitly; it arrives later as a new turn, so keep working instead of waiting.
 A peer whose session is busy reports "queued": the message stays in its inbox and is injected as soon as that session goes idle. That is normal — do not resend it.
+You can send to an agent that is offline: the message is kept in its inbox and delivered when it comes back, for as long as that inbox exists. "stale" means not heartbeating right now, not gone.
 Use context as a short topic tag (e.g. "T-001 contract"). If no reply comes within a few minutes, check ${TOOL_PEERS} before re-sending.`
 
 export function buildTools(

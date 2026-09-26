@@ -9,7 +9,8 @@ import path from "node:path"
 import { after, describe, it } from "node:test"
 
 import { parseEnvelope } from "../src/envelope.ts"
-import { enqueue, InboxWatcher, readAck } from "../src/inbox.ts"
+import { enqueue, InboxWatcher, readAck, readProcessedDepth } from "../src/inbox.ts"
+import { newMessageId } from "../src/ids.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
 import { noopLogger } from "../src/logger.ts"
@@ -65,8 +66,23 @@ describe("mesh", () => {
   it("rejects invalid timing configuration", () => {
     assert.throws(
       () => resolveConfig({ heartbeatIntervalMs: 100, staleAfterMs: 100 }),
-      /heartbeatIntervalMs < staleAfterMs < expireAfterMs/,
+      /heartbeatIntervalMs < staleAfterMs < presenceReapMs/,
     )
+    assert.throws(
+      () => resolveConfig({ presenceReapMs: 86_400_001 }),
+      /presenceReapMs must be at most 86400000ms/,
+    )
+    assert.throws(
+      () => resolveConfig({ messageRetentionMs: 604_800_001 }),
+      /messageRetentionMs must be at most 604800000ms/,
+    )
+  })
+
+  it("reaps presence on minutes but keeps messages for a day", () => {
+    const config = resolveConfig({})
+    assert.equal(config.presenceReapMs, 300_000)
+    assert.equal(config.messageRetentionMs, 86_400_000)
+    assert.equal(config.staleAfterMs, 60_000)
   })
 
   it("rejects an excessive prompt timeout", () => {
@@ -350,13 +366,15 @@ describe("mesh", () => {
     await watcher.start()
     await watcher.drain()
     assert.equal(attempts, 2)
-    const deadFile = path.join(inbox, "dead", `${message.id}.json`)
+    const deadFile = path.join(config.deadDir, "reviewer", `${message.id}.json`)
     const dead = await readJson<Record<string, unknown>>(deadFile)
     assert.equal((dead?.["_deadLetter"] as Record<string, unknown>)?.["attempts"], 2)
     assert.equal(dead?.["_claim"], undefined)
     assert.equal(dead?.["_retryCount"], undefined)
     const entries = await fs.readdir(inbox)
-    assert.equal(entries.includes("dead"), true)
+    // Dead letters live outside the inbox: a subdirectory here would keep the
+    // inbox non-empty forever and block the orphan sweep.
+    assert.equal(entries.includes("dead"), false)
     assert.equal(entries.includes(`${message.id}.json`), false)
     assert.equal(entries.includes(`${message.id}.json.taken`), false)
   })
@@ -537,12 +555,12 @@ describe("mesh", () => {
     }
     await internal.agents.get("ses_b")!.watcher.stop()
     const parentId = "agm_01ARZ3NDEKTSV4RRFFQ69G5FAW"
-    const inbox = path.join(config.inboxDir, "reviewer")
-    await fs.mkdir(inbox, { recursive: true })
-    await writeJsonAtomic(path.join(inbox, `${parentId}.json`), {
-      ...leaseMessage(),
+    // The depth of a message we were sent lives in our own processed marker,
+    // not in an inbox copy: the inbox copy is gone after delivery.
+    await writeJsonAtomic(path.join(config.processedDir, `${parentId}.json`), {
       id: parentId,
-      replyDepth: 1,
+      at: new Date().toISOString(),
+      depth: 1,
     })
     await assert.rejects(
       b.mesh.send({
@@ -553,6 +571,107 @@ describe("mesh", () => {
       }),
       (error: MeshError) => error.code === "E_REPLY_DEPTH_EXCEEDED",
     )
+  })
+
+  it("sends to a peer whose presence record went stale", async () => {
+    const { config, a, b } = await twoAgents({ staleAfterMs: 1 })
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    await b.mesh.register({
+      context: sessionContext("ses_b", "/tmp/reviewer"),
+      id: "reviewer",
+      description: "reviews",
+    })
+    // Presence lapses, the mailbox does not: the message still lands.
+    const when = new Date(Date.now() - 600_000)
+    await fs.utimes(path.join(config.agentsDir, "reviewer.json"), when, when)
+
+    const result = await a.mesh.send({ context: aContext, to: "reviewer", text: "still deliverable" })
+    assert.equal(result.status, "accepted")
+    assert.equal(b.injected.length, 1)
+  })
+
+  it("sends to an address with a mailbox but no presence record", async () => {
+    const { config, a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    // A session that closed its window: the record is reaped, the inbox stays.
+    const inbox = path.join(config.inboxDir, "away")
+    await fs.mkdir(inbox, { recursive: true })
+    assert.equal(await a.mesh.registry.get("away"), undefined)
+
+    const result = await a.mesh.send({ context: aContext, to: "away", text: "mail for later" })
+    assert.equal(result.status, "queued")
+    assert.equal((await messageFiles(inbox)).length, 1)
+  })
+
+  it("rejects an address that was never used", async () => {
+    const { a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+
+    await assert.rejects(
+      a.mesh.send({ context: aContext, to: "never-existed", text: "hello?" }),
+      (error: MeshError) => error.code === "E_NO_AGENT",
+    )
+  })
+
+  it("keeps the reply depth of a delivered message for the answer", async () => {
+    const { config, a, b } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    const bContext = sessionContext("ses_b", "/tmp/reviewer")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    await b.mesh.register({ context: bContext, id: "reviewer", description: "reviews" })
+
+    const request = await a.mesh.send({ context: aContext, to: "reviewer", text: "please review" })
+    assert.equal(request.status, "accepted")
+    // Injected by the reviewer, so its inbox copy is already gone: the only
+    // surviving record of how deep this chain is sits in the local marker.
+    assert.equal(await readProcessedDepth(config, request.messageId), 0)
+
+    const response = await b.mesh.send({
+      context: bContext,
+      to: "planner",
+      text: "on it",
+      in_reply_to: request.messageId,
+    })
+    // Depth 1, not a reset 0: reading it from the sender's inbox used to
+    // always return 0 and let a chain grow without bound.
+    await waitFor(async () => (await readProcessedDepth(config, response.messageId)) === 1)
+  })
+
+  it("stamps the depth of an injected message into its processed marker", async () => {
+    const { config, a } = await twoAgents()
+    await a.mesh.register({
+      context: sessionContext("ses_a", "/tmp/planner"),
+      id: "planner",
+      description: "plans",
+    })
+    const message = { ...leaseMessage(), to: "planner", from: "reviewer", replyDepth: 3 }
+    await enqueue(config, message)
+
+    await waitFor(async () => (await readProcessedDepth(config, message.id)) === 3)
+    const marker = await readJson<{ depth?: number }>(
+      path.join(config.processedDir, `${message.id}.json`),
+    )
+    assert.equal(marker?.depth, 3)
+  })
+
+  it("reads an older processed marker without a depth as zero", async () => {
+    const { config } = await twoAgents()
+    const messageId = newMessageId()
+    await fs.mkdir(config.processedDir, { recursive: true })
+    await writeJsonAtomic(path.join(config.processedDir, `${messageId}.json`), {
+      id: messageId,
+      at: new Date().toISOString(),
+    })
+    assert.equal(await readProcessedDepth(config, messageId), 0)
+  })
+
+  it("reads a depth of zero for a message it never injected", async () => {
+    const { config } = await twoAgents()
+    assert.equal(await readProcessedDepth(config, "agm_01ARZ3NDEKTSV4RRFFQ69G5FAW"), 0)
+    assert.equal(await readProcessedDepth(config, "not-a-message-id"), 0)
   })
 
   it("sees the peer through agentmesh_peers", async () => {
@@ -723,12 +842,12 @@ describe("mesh", () => {
 
     await b.mesh.register({ context: bContext, id: "reviewer", description: "reviews" })
     await waitFor(async () => {
-      const quarantined = await fs.readdir(path.join(inbox, "quarantine"))
+      const quarantined = await fs.readdir(path.join(config.quarantineDir, "reviewer"))
       return quarantined.includes(`${messageId}.json`)
     })
     assert.equal(b.injected.length, 0)
     assert.deepEqual(await messageFiles(inbox), [])
-    assert.equal((await fs.readdir(inbox)).includes("quarantine"), true)
+    assert.equal((await fs.readdir(inbox)).includes("quarantine"), false)
   })
 
   it("accepts legacy messages without schemaVersion", async () => {
@@ -766,7 +885,7 @@ describe("mesh", () => {
       JSON.stringify({ id: messageId, to: "reviewer", text: "missing sender", sentAt: new Date().toISOString() }),
     )
     await b.mesh.register({ context: sessionContext("ses_b", "/tmp/reviewer"), id: "reviewer", description: "reviews" })
-    await waitFor(async () => (await fs.readdir(path.join(inbox, "quarantine"))).includes(`${messageId}.invalid`))
+    await waitFor(async () => (await fs.readdir(path.join(config.quarantineDir, "reviewer"))).includes(`${messageId}.invalid`))
     assert.equal(b.injected.length, 0)
   })
 
@@ -786,7 +905,7 @@ describe("mesh", () => {
       }),
     )
     await b.mesh.register({ context: sessionContext("ses_b", "/tmp/reviewer"), id: "reviewer", description: "reviews" })
-    await waitFor(async () => (await fs.readdir(path.join(inbox, "quarantine"))).includes(`${messageId}.invalid`))
+    await waitFor(async () => (await fs.readdir(path.join(config.quarantineDir, "reviewer"))).includes(`${messageId}.invalid`))
     assert.equal(b.injected.length, 0)
   })
 
@@ -806,7 +925,7 @@ describe("mesh", () => {
       }),
     )
     await b.mesh.register({ context: sessionContext("ses_b", "/tmp/reviewer"), id: "reviewer", description: "reviews" })
-    await waitFor(async () => (await fs.readdir(path.join(inbox, "quarantine"))).includes(`${messageId}.invalid`))
+    await waitFor(async () => (await fs.readdir(path.join(config.quarantineDir, "reviewer"))).includes(`${messageId}.invalid`))
     assert.equal(b.injected.length, 0)
   })
 
@@ -1001,8 +1120,8 @@ describe("mesh", () => {
     )
     cleanups.push(() => watcher.stop())
     await watcher.start()
-    const deadFile = path.join(inbox, "dead", `${message.id}.json`)
-    await waitFor(async () => (await fs.readdir(path.join(inbox, "dead"))).includes(`${message.id}.json`))
+    const deadFile = path.join(config.deadDir, "reviewer", `${message.id}.json`)
+    await waitFor(async () => (await fs.readdir(path.join(config.deadDir, "reviewer"))).includes(`${message.id}.json`))
     const dead = await readJson<Record<string, unknown>>(deadFile)
     assert.equal((dead?.["_deadLetter"] as Record<string, unknown>)["attempts"], 1)
     const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))

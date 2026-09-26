@@ -43,6 +43,8 @@ There is **no daemon, no port, no lock**. All coordination happens through one h
 <home>/agents/<id>.json        one record, written ONLY by its owner
 <home>/activity/<id>          last session turn of <id>, touched ONLY by its owner
 <home>/inbox/<id>/<msgid>.json messages for <id>, written by senders
+<home>/dead/<id>/<msgid>.json  undeliverable messages, written by the recipient
+<home>/quarantine/<id>/        malformed messages, written by the recipient
 <home>/acks/<msgid>.json       delivery ack, written by the recipient
 <home>/processed/<msgid>.json local recipient marker after successful injection
 ```
@@ -63,6 +65,17 @@ Correctness rests on facts that are easy to break accidentally:
   state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
   (`store.touch`). `pidAlive` makes a killed opencode stale immediately instead of after 60s.
+- **Addressability is not presence.** `send()` accepts an id while either its record exists or its
+  `inbox/<id>/` directory does (`Mesh.inboxDirExists`), so mail to an agent that closed its window
+  queues instead of failing with `E_NO_AGENT`. `presenceReapMs` drops the record; the mailbox
+  outlives it on purpose. `stale` means "not heartbeating right now", never "undeliverable".
+- **`dead/` and `quarantine/` live outside `inbox/<id>/`.** Inside, a single dead letter would keep
+  the inbox non-empty forever, and an inbox is only reaped when it is empty. That's the whole reason
+  for `<home>/dead/<id>/` and `<home>/quarantine/<id>/`.
+- **Reply depth is read from `<home>/processed/`, never from the sender's inbox.** The inbox copy is
+  deleted the moment delivery succeeds, so reading depth from it always returned 0 and let a reply
+  chain grow without bound. `deliverOne` stamps the depth into the processed marker and
+  `readProcessedDepth` reads it back; a marker without `depth` is 0.
 - **Activity is a separate `utimes` file, `<home>/activity/<id>`.** It is touched on every
   `chat.message` and `session.idle`, never a rewrite of `agents/<id>.json` — a rewrite would
   open a rename window where a peer's `list()` sees ENOENT and the peer vanishes. Peers read it
@@ -83,13 +96,16 @@ Correctness rests on facts that are easy to break accidentally:
 - `fs.watch` is best-effort; `pollIntervalMs` is the safety net for events macOS drops and for
   messages that landed while the process was down. Don't remove the poll.
 - **Cleanup is conservative on purpose.** One sweep per minute (`Mesh.tick`, `REAP_INTERVAL_MS`)
-  runs `registry.reap`, `reapAcks`, `cleanupOrphanedInboxes`, `cleanupProcessed`. Deletion rules:
+  runs `registry.reap`, `reapAcks`, `cleanupOrphanedInboxes`, `cleanupExpiredMessages`,
+  `cleanupProcessed`. Deletion rules: `agents/<id>.json` goes after `presenceReapMs` of silence;
   `activity/<id>` goes only in `Registry.unregister()` (which `reap` also goes through);
   `inbox/<id>` goes only from `cleanupOrphanedInboxes`, only when the agent has no record, the
   inbox is empty, and its mtime is older than `queueRetentionMs`. `unregisterSession()` must never
   delete an inbox — the id can be re-registered by the next session in that directory, and a
-  non-empty inbox is undelivered work. `processed/<msgid>.json` is reaped by mtime after
-  `processedRetentionMs`, which is exactly how long replay suppression lasts.
+  non-empty inbox is undelivered work. Individual messages in `inbox/`, `dead/` and `quarantine/`
+  are dropped by mtime after `messageRetentionMs`, which is the only bound on queued mail.
+  `processed/<msgid>.json` is reaped by mtime after `processedRetentionMs`, which is exactly how
+  long replay suppression lasts.
 
 ## Plugin-specific gotchas
 
