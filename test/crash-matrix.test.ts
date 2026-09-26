@@ -73,7 +73,9 @@ async function fixture(overrides: Record<string, unknown> = {}): Promise<{
 
 async function stopAndRemove(home: string, watcher?: InboxWatcher): Promise<void> {
   await watcher?.stop()
-  await fs.rm(home, { recursive: true, force: true })
+  // The claim rename in inbox/ leaves a delayed directory entry on Windows, so
+  // rmdir can land on ENOTEMPTY. Same retry options test/security.test.ts uses.
+  await fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 }
 
 describe("crash matrix", () => {
