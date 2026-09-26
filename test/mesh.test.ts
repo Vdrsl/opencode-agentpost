@@ -556,7 +556,7 @@ describe("mesh", () => {
   })
 
   it("sees the peer through agentmesh_peers", async () => {
-    const { a, b } = await twoAgents()
+    const { config, a, b } = await twoAgents()
     await a.mesh.register({
       context: sessionContext("ses_a", "/tmp/planner"),
       id: "planner",
@@ -568,15 +568,59 @@ describe("mesh", () => {
       id: "reviewer",
       description: "reviews",
     })
+    // planner had no turn for five minutes; reviewer just registered.
+    const longAgo = new Date(Date.now() - 300_000)
+    await fs.utimes(path.join(config.activityDir, "planner"), longAgo, longAgo)
 
     const peers = await a.mesh.peers({ sessionID: "ses_a" })
     assert.deepEqual(
       peers.map((peer) => peer.id),
-      ["planner", "reviewer"],
+      ["reviewer", "planner"],
     )
     assert.equal(peers.find((peer) => peer.id === "planner")?.self, true)
     assert.equal(peers.find((peer) => peer.id === "reviewer")?.status, "alive")
     assert.equal(peers.find((peer) => peer.id === "reviewer")?.self, undefined)
+  })
+
+  it("lists peers freshest first, alive before stale, id as the tie-break", async () => {
+    const { config, a } = await twoAgents()
+    for (const id of ["planner", "fresh", "mid", "ancient", "twin-a", "twin-b", "gone"]) {
+      await a.mesh.register({
+        context: sessionContext(`ses_${id}`, "/tmp/planner"),
+        id,
+        description: "d",
+      })
+    }
+    const backdate = async (id: string, when: Date) => {
+      await fs.utimes(path.join(config.activityDir, id), when, when)
+    }
+    for (const id of ["fresh", "gone", "mid", "ancient", "twin-a", "twin-b"]) {
+      await a.mesh.noteActivity(`ses_${id}`)
+    }
+    const now = Date.now()
+    await backdate("mid", new Date(now - 60_000))
+    // Same timestamp for both twins, so only the id can order them.
+    const twin = new Date(now - 600_000)
+    for (const id of ["twin-a", "twin-b"]) await backdate(id, twin)
+    await backdate("ancient", new Date(now - 7_200_000))
+
+    // A dead pid makes "gone" stale no matter how fresh it looks.
+    const goneRecord = await readJson<Record<string, unknown>>(
+      path.join(config.agentsDir, "gone.json"),
+    )
+    await writeJsonAtomic(path.join(config.agentsDir, "gone.json"), {
+      ...goneRecord,
+      pid: 2 ** 30,
+    })
+
+    const peers = await a.mesh.peers({ sessionID: "ses_planner" })
+    assert.deepEqual(
+      peers.map((peer) => peer.id).filter((id) => id !== "planner"),
+      ["fresh", "mid", "twin-a", "twin-b", "ancient", "gone"],
+    )
+    assert.equal(peers.at(-1)?.status, "stale")
+    const ancient = peers.find((peer) => peer.id === "ancient")
+    assert.ok((ancient?.idleMs ?? 0) >= 3_600_000)
   })
 
   it("queues for an agent that is registered but not listening", async () => {

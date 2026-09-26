@@ -36,11 +36,17 @@ ${identity}
    act promptly; a \`stale\` peer still receives the message and gets it when it
    comes back.
 
-2. **Messages carry no shared context.** The peer sees only the text you send —
+2. **Prefer the least idle peer.** Peers expose \`idleMs\` — milliseconds since
+   the last turn in their session, so a large value means nobody is watching
+   that chat. Send to the smallest \`idleMs\` that fits the task. If every peer
+   that could own the work has been idle for hours, the session is unattended:
+   say so in your final answer instead of dropping a question into a dead chat.
+
+3. **Messages carry no shared context.** The peer sees only the text you send —
    not your conversation, files, or task. Write self-contained: what you need,
    why, and every fact it must know (paths, names, the contract you agreed on).
 
-3. **Sending is not asking.** \`${TOOL_SEND}\` returns a delivery status
+4. **Sending is not asking.** \`${TOOL_SEND}\` returns a delivery status
     (\`accepted\` = OpenCode returned 204 and accepted the message into the peer's
    session, \`queued\` = it is waiting for the peer, \`failed\` = it did not land,
    \`ambiguous\` = the delivery outcome is unknown), never the peer's answer.
@@ -48,14 +54,14 @@ ${identity}
     If you want a reply, ask for one in the text. It arrives later as a new turn —
    keep working in the meantime instead of idling.
 
-4. **If delivery returns \`ambiguous\`** — the message may or may not have
+5. **If delivery returns \`ambiguous\`** — the message may or may not have
    been accepted. Wait ~30 seconds, then call \`${TOOL_PEERS}\` to check the
    peer's status. Do NOT resend the same message immediately — you may create
    a duplicate. If the peer is alive and no reply arrives within a few
    minutes, send a *new* message that references the original attempt rather
    than repeating it verbatim.
 
-5. **Incoming messages look like this**, arriving as a user turn:
+6. **Incoming messages look like this**, arriving as a user turn:
 
    \`\`\`
     [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | in-reply-to: agm_… | re: T-001
@@ -78,12 +84,12 @@ ${identity}
     \`${TOOL_SEND}\` when they asked you to. Pass the incoming message's \`msg\` id
     as \`in_reply_to\` so the peer can correlate the response.
 
-6. **Reply chains are bounded.** The mesh rejects replies beyond
+7. **Reply chains are bounded.** The mesh rejects replies beyond
        ${options.maxReplyDepth} levels. If you hit the limit, start a new topic by
        omitting \`in_reply_to\` and reference the prior conversation in the text:
        "Continuing our discussion about T-001 auth review from earlier..."
 
-7. **Keep it a side channel.** Reference paths, never paste file contents.
+8. **Keep it a side channel.** Reference paths, never paste file contents.
    Never include API keys, tokens, passwords, private keys, or credentials —
    the mesh is a filesystem-based channel, not encrypted transport. Reference
    secret locations (env var names, vault paths) and let the peer read them

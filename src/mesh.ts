@@ -180,24 +180,28 @@ export class Mesh {
        })
     }
     this.startTimer()
+    // Registering is itself a turn in that session, so the agent is not idle.
+    await this.registry.touchActivity(record.id).catch(() => {})
 
-    const entries = await this.registry.list()
+    const now = Date.now()
+    const entries = await this.registry.list(now)
     const self = entries.find((entry) => entry.record.id === record.id)
     return {
       self: self
-        ? this.registry.toPeerView(self, record.id)
+        ? this.registry.toPeerView(self, record.id, now)
         : {
             id: record.id,
             description: record.description,
             metadata: record.metadata,
             status: "alive",
             lastSeen: new Date().toISOString(),
+            idleMs: 0,
             directory: record.routing.directory,
             self: true,
           },
       peers: entries
         .filter((entry) => entry.record.id !== record.id)
-        .map((entry) => this.registry.toPeerView(entry, record.id)),
+        .map((entry) => this.registry.toPeerView(entry, record.id, now)),
     }
   }
 
@@ -241,13 +245,33 @@ export class Mesh {
     }
   }
 
+  /**
+   * Peers, freshest first: alive before stale, then least idle, id as the
+   * tie-break. Ordering is the fix for "every peer looks equally plausible" —
+   * the model reads the top of the list first.
+   */
   async peers(options: { sessionID?: string; includeStale?: boolean } = {}): Promise<PeerView[]> {
     const selfId = options.sessionID ? this.selfId(options.sessionID) : undefined
-    const entries = await this.registry.list()
+    const now = Date.now()
+    const entries = await this.registry.list(now)
     return entries
       .filter((entry) => options.includeStale !== false || entry.status === "alive")
-      .map((entry) => this.registry.toPeerView(entry, selfId))
-      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((entry) => this.registry.toPeerView(entry, selfId, now))
+      .sort((a, b) => {
+        if (a.status !== b.status) return a.status === "alive" ? -1 : 1
+        if (a.idleMs !== b.idleMs) return a.idleMs - b.idleMs
+        return a.id.localeCompare(b.id)
+      })
+  }
+
+  /**
+   * "A turn just happened in this session." Touch-only marker, so an idle chat
+   * stays visibly idle instead of being kept fresh by its own heartbeat.
+   */
+  async noteActivity(sessionID: string): Promise<void> {
+    const id = this.agents.get(sessionID)?.id
+    if (!id) return
+    await this.registry.touchActivity(id)
   }
 
   // -------------------------------------------------------------- messaging

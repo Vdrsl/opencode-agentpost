@@ -20,9 +20,10 @@ Arguments:
 
 Returns your own entry plus everyone else currently on the mesh.`
 
-const PEERS_DESCRIPTION = `List the agents on the mesh with live state: id, description, metadata, status (alive/stale), lastSeen, directory.
+const PEERS_DESCRIPTION = `List the agents on the mesh with live state: id, description, metadata, status (alive/stale), lastSeen, idleMs, directory.
 Use it to (1) get a valid "to" before ${TOOL_SEND}, (2) check whether a peer is still alive before or after sending, and (3) read peer metadata — project path, stack, role — to decide who a piece of work belongs to.
-A stale peer is not gone: messages queue and are accepted when it returns.`
+A stale peer is not gone: messages queue and are accepted when it returns.
+idleMs is ms since that peer's last session turn: prefer the smallest value that fits the task, and treat an hours-old one as an unattended chat. Peers are returned freshest first.`
 
 const SEND_DESCRIPTION = `Send one message to another registered agent. It is injected into that agent's opencode session as a new user turn.
 This returns a delivery status, NOT the peer's answer: "accepted" (OpenCode returned 204 and accepted the message into the peer's session), "queued" (waiting for them to come back), "failed" (it could not be injected), "ambiguous" (the delivery outcome is unknown). Accepted does not mean the peer read the message or that the model answered.

@@ -59,7 +59,7 @@ you send your first message, and gets three tools:
 | Tool                 | Purpose                                                                                                                                                    |
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `agentmesh_register` | Publish this agent's id, description, and metadata so peers can find it. Called automatically; call it again to update your description or change your id. |
-| `agentmesh_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, directory.                                           |
+| `agentmesh_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, `idleMs` (ms since its last turn), directory. Freshest first. |
 | `agentmesh_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `in_reply_to` with the incoming `msg` id for correlated replies (`reply_to` remains a legacy alias). |
 
 A message sent to a peer that's offline stays in the durable inbox. The recipient's
@@ -104,6 +104,13 @@ marker; a restart can use it to avoid re-injecting an orphaned claim. This is
 local replay suppression, not exactly-once delivery. Liveness is a heartbeat
 (file mtime) plus a process check, so a killed opencode shows up as stale
 immediately rather than lingering.
+
+A live process is not the same as a human at the keyboard, so every agent also
+gets an `activity/<id>` file touched on each session turn. Peers report it as
+`idleMs` — ms since that session's last turn — and are listed freshest first.
+An agent whose opencode has been sitting in a chat nobody opened for two days
+stays `alive`, but its `idleMs` grows, so a model can tell it apart from the
+session someone is actually working in.
 
 If your agents run on different machines, point `AGENTMESH_HOME` (see below)
 at a directory synced or shared between them (e.g. a network mount).

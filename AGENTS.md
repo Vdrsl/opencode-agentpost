@@ -41,6 +41,7 @@ There is **no daemon, no port, no lock**. All coordination happens through one h
 
 ```
 <home>/agents/<id>.json        one record, written ONLY by its owner
+<home>/activity/<id>          last session turn of <id>, touched ONLY by its owner
 <home>/inbox/<id>/<msgid>.json messages for <id>, written by senders
 <home>/acks/<msgid>.json       delivery ack, written by the recipient
 <home>/processed/<msgid>.json local recipient marker after successful injection
@@ -62,6 +63,12 @@ Correctness rests on facts that are easy to break accidentally:
   state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
   (`store.touch`). `pidAlive` makes a killed opencode stale immediately instead of after 60s.
+- **Activity is a separate `utimes` file, `<home>/activity/<id>`.** It is touched on every
+  `chat.message` and `session.idle`, never a rewrite of `agents/<id>.json` — a rewrite would
+  open a rename window where a peer's `list()` sees ENOENT and the peer vanishes. Peers read it
+  as `PeerView.idleMs` (fallback: record mtime), because a live process says nothing about whether
+  anyone is at the keyboard. `peers()` sorts alive → least idle → stale, id as tie-break: that
+  ordering is the feature, so keep it when changing the query.
 - **Message ids are ULIDs prefixed `agm_`, monotonic per process** (`src/ids.ts`). FIFO ordering
   comes solely from inbox filenames sorting lexicographically. Changing the id format silently
   breaks message ordering.

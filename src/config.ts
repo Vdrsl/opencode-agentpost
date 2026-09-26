@@ -6,6 +6,7 @@
  * and reads everyone else's, so peer discovery needs no locking at all.
  *
  *   <home>/agents/<id>.json       record, written only by <id>
+ *   <home>/activity/<id>          last session turn, touched only by <id>
  *   <home>/inbox/<id>/<msg>.json  messages for <id>, written by peers
  *   <home>/acks/<msg>.json        delivery ack, written by the recipient
  *   <home>/processed/<msg>.json   local recipient marker after successful injection
@@ -68,6 +69,7 @@ export type MeshOptions = {
 export type MeshConfig = {
   home: string
   agentsDir: string
+  activityDir: string
   inboxDir: string
   acksDir: string
   processedDir: string

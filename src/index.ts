@@ -99,12 +99,16 @@ export const AgentMesh: Plugin = async (input, options) => {
 
     /** First user turn in a session puts it on the mesh, with no model input. */
     "chat.message": async ({ sessionID }) => {
-      if (!config.autoRegister || mesh.isRegistered(sessionID)) return
-      try {
-        await mesh.autoRegister(sessionContext(sessionID))
-      } catch (error) {
-        logger("error", "auto_register_failed")
+      if (config.autoRegister && !mesh.isRegistered(sessionID)) {
+        try {
+          await mesh.autoRegister(sessionContext(sessionID))
+        } catch (error) {
+          logger("error", "auto_register_failed")
+        }
       }
+      // Every turn, not just the first: this is what makes an abandoned chat
+      // look abandoned to peers instead of permanently fresh.
+      await mesh.noteActivity(sessionID).catch(() => {})
     },
 
     /** Teach the protocol in the system prompt instead of a per-repo AGENTS.md. */
@@ -119,9 +123,16 @@ export const AgentMesh: Plugin = async (input, options) => {
       )
     },
 
-    /** A deleted session must not linger in the registry as a live peer. */
+    /**
+     * A deleted session must not linger in the registry as a live peer, and a
+     * session that just finished a turn is the freshest thing on the mesh.
+     */
     event: async ({ event }) => {
       logger("debug", "opencode_event")
+      if (event.type === "session.idle") {
+        await mesh.noteActivity(event.properties.sessionID).catch(() => {})
+        return
+      }
       if (event.type !== "session.deleted") return
       await mesh.unregisterSession(event.properties.info.id).catch(() => {})
     },

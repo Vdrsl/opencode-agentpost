@@ -168,4 +168,38 @@ describe("registry", () => {
     const listed = (await registry.list()).map((entry) => entry.record.id)
     assert.deepEqual(listed, ["good"])
   })
+
+  it("measures idle from the activity marker, not the heartbeat", async () => {
+    const registry = await newRegistry()
+    await registry.register({ id: "planner", description: "d", routing: routing("ses_1") })
+    await registry.touchActivity("planner")
+    const activity = registry.activityPath("planner")
+    const backdate = Date.now() - 5 * 60_000
+    await fs.utimes(activity, new Date(backdate), new Date(backdate))
+
+    const entry = await registry.get("planner")
+    // The heartbeat never stops, so record mtime is fresh while the session is not.
+    assert.equal(entry?.status, "alive")
+    assert.ok((entry?.activityMtimeMs ?? 0) <= backdate + 1_000)
+    const view = registry.toPeerView(entry!, "me")
+    assert.ok(view.idleMs >= 5 * 60_000, `idleMs was ${view.idleMs}`)
+  })
+
+  it("falls back to the record mtime when no activity marker exists", async () => {
+    const registry = await newRegistry()
+    await registry.register({ id: "planner", description: "d", routing: routing("ses_1") })
+    await fs.utimes(registry.recordPath("planner"), new Date(0), new Date(0))
+    const entry = await registry.get("planner")
+    assert.equal(entry?.activityMtimeMs, entry?.mtimeMs)
+    assert.ok(registry.toPeerView(entry!).idleMs > 0)
+  })
+
+  it("never reports a negative idleMs", async () => {
+    const registry = await newRegistry()
+    await registry.register({ id: "planner", description: "d", routing: routing("ses_1") })
+    await registry.touchActivity("planner")
+    const ahead = Date.now() + 60_000
+    await fs.utimes(registry.activityPath("planner"), new Date(ahead), new Date(ahead))
+    assert.equal(registry.toPeerView((await registry.get("planner"))!).idleMs, 0)
+  })
 })

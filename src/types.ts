@@ -45,6 +45,8 @@ export type PeerView = {
   metadata: Record<string, string>
   status: AgentStatus
   lastSeen: string
+  /** Ms since this session's last turn, from `<home>/activity/<id>`. */
+  idleMs: number
   directory: string
   self?: true
 }

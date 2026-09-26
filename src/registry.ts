@@ -1,12 +1,19 @@
 /**
- * The registry: one JSON file per agent under `<home>/agents/`.
+ * The registry: one JSON file per agent under `<home>/agents/`, plus one
+ * touch-only marker per agent under `<home>/activity/`.
  *
  * Only an agent's own plugin instance ever writes its record, so there is no
  * shared mutable state and no locking. Liveness is the record file's mtime
  * (bumped by a heartbeat) plus a pid check, which turns a killed opencode into
  * an immediately-stale peer instead of one that lingers for a minute.
+ *
+ * The activity marker answers a different question — "was anyone actually
+ * driving this session?" — because a long-lived opencode process keeps
+ * heartbeating for chats the human abandoned days ago. Like the heartbeat it
+ * is `utimes` only, so no reader ever sees the agent's record disappear.
  */
 
+import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -14,6 +21,7 @@ import { assertValidId, type MeshConfig } from "./config.ts"
 import { noopLogger, type Logger } from "./logger.ts"
 import {
   ageMs,
+  ensureDir,
   listJsonFiles,
   pidAlive,
   readJsonWithMtime,
@@ -33,6 +41,8 @@ import {
 export type RegistryEntry = {
   record: AgentRecord
   mtimeMs: number
+  /** Last session turn. Falls back to the record mtime for older records. */
+  activityMtimeMs: number
   status: "alive" | "stale"
 }
 
@@ -71,6 +81,32 @@ export class Registry {
     return path.join(this.config.agentsDir, `${id}.json`)
   }
 
+  activityPath(id: string): string {
+    assertValidId(id)
+    return path.join(this.config.activityDir, id)
+  }
+
+  /**
+   * Mark "a turn just happened in this agent's session". Touch-only, exactly
+   * like the heartbeat: the record itself is never rewritten, so a concurrent
+   * `list()` can never observe it missing.
+   */
+  async touchActivity(id: string): Promise<void> {
+    const file = this.activityPath(id)
+    await ensureDir(this.config.activityDir)
+    if (await touch(file)) return
+    await writeJsonAtomic(file, { id, at: new Date().toISOString() })
+  }
+
+  /** Activity mtime, or `undefined` for an agent that never reported a turn. */
+  private async readActivityMtime(id: string): Promise<number | undefined> {
+    try {
+      return (await fs.stat(this.activityPath(id))).mtimeMs
+    } catch {
+      return undefined
+    }
+  }
+
   inboxPath(id: string): string {
     assertValidId(id)
     return path.join(this.config.inboxDir, id)
@@ -92,6 +128,7 @@ export class Registry {
       entries.push({
         record: read.value,
         mtimeMs: read.mtimeMs,
+        activityMtimeMs: (await this.readActivityMtime(read.value.id)) ?? read.mtimeMs,
         status: this.statusOf(read.value, read.mtimeMs, now),
       })
     }
@@ -107,6 +144,7 @@ export class Registry {
     return {
       record: read.value,
       mtimeMs: read.mtimeMs,
+      activityMtimeMs: (await this.readActivityMtime(read.value.id)) ?? read.mtimeMs,
       status: this.statusOf(read.value, read.mtimeMs, now),
     }
   }
@@ -206,13 +244,14 @@ export class Registry {
     return removed
   }
 
-  toPeerView(entry: RegistryEntry, selfId?: string): PeerView {
+  toPeerView(entry: RegistryEntry, selfId?: string, now: number = Date.now()): PeerView {
     const view: PeerView = {
       id: entry.record.id,
       description: entry.record.description,
       metadata: entry.record.metadata,
       status: entry.status,
       lastSeen: new Date(entry.mtimeMs).toISOString(),
+      idleMs: ageMs(entry.activityMtimeMs, now),
       directory: entry.record.routing.directory,
     }
     if (entry.record.id === selfId) view.self = true
