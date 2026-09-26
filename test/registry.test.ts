@@ -4,6 +4,7 @@ import os from "node:os"
 import { after, describe, it } from "node:test"
 
 import { Registry } from "../src/registry.ts"
+import { agentName } from "../src/names.ts"
 import { type AgentRouting, MeshError } from "../src/types.ts"
 import { tempHome, testConfig } from "./helpers.ts"
 
@@ -148,6 +149,28 @@ describe("registry", () => {
     assert.equal(await registry.allocateId("web", "ses_2"), "web-2")
     // ...but the same session keeps its own id.
     assert.equal(await registry.allocateId("web", "ses_1"), "web")
+  })
+
+  it("hashes an auto name from the session so a restart reclaims it", async () => {
+    const registry = await newRegistry()
+    const name = await registry.allocateName("ses_1")
+    assert.match(name, /^[a-z]+-[a-z]+$/)
+    // Another process, same home, same session: the address must not drift,
+    // or the peer's inbox would be orphaned under a name nobody will send to.
+    const restarted = new Registry(testConfig(registry.config.home))
+    assert.equal(await restarted.allocateName("ses_1"), name)
+    // A different session in the same directory is a different agent.
+    assert.notEqual(await registry.allocateName("ses_2"), name)
+  })
+
+  it("walks past a name a live peer already holds", async () => {
+    const registry = await newRegistry()
+    // Park the name ses_2 hashes to on its first try under another session.
+    await registry.register({ id: agentName("ses_2", 1), description: "d", routing: routing("ses_1") })
+    assert.equal(await registry.allocateName("ses_2"), agentName("ses_2", 2))
+    // The session that owns a name gets it back rather than walking past it.
+    await registry.register({ id: agentName("ses_3", 1), description: "d", routing: routing("ses_3") })
+    assert.equal(await registry.allocateName("ses_3"), agentName("ses_3", 1))
   })
 
   it("reaps records that expired and leaves fresh ones alone", async () => {

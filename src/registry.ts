@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto"
 
 import { assertValidId, type MeshConfig } from "./config.ts"
 import { noopLogger, type Logger } from "./logger.ts"
+import { agentName } from "./names.ts"
 import {
   ageMs,
   ensureDir,
@@ -215,19 +216,49 @@ export class Registry {
   }
 
   /**
-   * Pick a free id for auto-registration: `preferred`, else `preferred-2`, …
-   * An id already held by our own session is reused as-is.
+   * Walk candidate names until one is free. A name we already hold ourselves is
+   * returned as-is, so a restart reclaims the same address instead of drifting.
    */
-  async allocateId(preferred: string, sessionID: string): Promise<string> {
+  private async pickFree(
+    name: (attempt: number) => string,
+    fallback: string,
+    sessionID: string,
+  ): Promise<string> {
     const now = Date.now()
     for (let attempt = 1; attempt <= 50; attempt++) {
-      const candidate = attempt === 1 ? preferred : `${preferred}-${attempt}`
+      const candidate = name(attempt)
       const existing = await this.get(candidate, now)
       if (!existing) return candidate
       if (existing.record.routing.sessionID === sessionID) return candidate
       if (existing.status !== "alive") return candidate
     }
-    return `${preferred}-${sessionID.slice(-6).toLowerCase()}`
+    return fallback
+  }
+
+  /**
+   * Pick a free id for auto-registration: `preferred`, else `preferred-2`, …
+   * An id already held by our own session is reused as-is. Only used when the
+   * operator pinned an id in the config.
+   */
+  async allocateId(preferred: string, sessionID: string): Promise<string> {
+    return this.pickFree(
+      (attempt) => (attempt === 1 ? preferred : `${preferred}-${attempt}`),
+      `${preferred}-${sessionID.slice(-6).toLowerCase()}`,
+      sessionID,
+    )
+  }
+
+  /**
+   * Pick a free name for auto-registration: an adjective-noun pair hashed from
+   * the session id, so the same chat keeps its address across restarts while two
+   * chats in one directory get different, sayable names.
+   */
+  async allocateName(sessionID: string): Promise<string> {
+    return this.pickFree(
+      (attempt) => agentName(sessionID, attempt),
+      `${agentName(sessionID, 1)}-${sessionID.slice(-6).toLowerCase()}`,
+      sessionID,
+    )
   }
 
   /** Drop records that have been dead long enough that nobody should see them. */

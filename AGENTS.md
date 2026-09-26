@@ -72,6 +72,11 @@ Correctness rests on facts that are easy to break accidentally:
 - **Message ids are ULIDs prefixed `agm_`, monotonic per process** (`src/ids.ts`). FIFO ordering
   comes solely from inbox filenames sorting lexicographically. Changing the id format silently
   breaks message ordering.
+- **Agent ids are `adjective-noun`, hashed from the `sessionID`** (`src/names.ts`,
+  `Registry.allocateName`), not from the directory and not from a random source. Deterministic on
+  purpose: a name that changed on every restart would orphan the peer's inbox and drift the address
+  other agents send to. `Registry.pickFree` walks `attempt` past a name a live peer holds; an
+  explicit `config.id` bypasses naming entirely (`Mesh.autoRegister` → `allocateId`).
 - **One plugin instance can host several sessions** (multiple opencode sessions in one directory).
   `Mesh` keeps a `sessionID -> {id, routing, watcher}` map, one watcher per session, one shared
   heartbeat/reap timer. Nothing may assume a single agent per process.

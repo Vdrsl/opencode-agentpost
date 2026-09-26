@@ -84,6 +84,15 @@ review src/auth.ts please
 That's what shows up as a new turn in the recipient's session — no polling,
 no manual relay.
 
+### Names
+
+An auto-registered agent gets an `adjective-noun` name like `quiet-otter`,
+hashed from its opencode `sessionID`. Two things follow, both deliberate: the
+same chat keeps the same name after a restart of opencode, so its address and
+its inbox stay put, and two chats in one directory never collide into
+`repo` and `repo-2`. The name is not drawn from a random source — that would
+drift on every restart and orphan the inbox. Set `id` to pin a name yourself.
+
 ### No daemon, just files
 
 Every agent's plugin instance coordinates through one shared home directory
@@ -125,7 +134,7 @@ variable that overrides it (env > plugin options > defaults):
 
 | Plugin option         | Env var                           | Default                                                                    | Description                                                                          |
 |-----------------------|-----------------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `id`                  | `AGENTMESH_ID`                    | derived from the worktree directory name                                   | Fixed agent id for this project.                                                     |
+| `id`                  | `AGENTMESH_ID`                    | an adjective-noun pair hashed from the session id                           | Fixed agent id for this project.                                                     |
 | `home`                | `AGENTMESH_HOME`                  | `$XDG_DATA_HOME/opencode-agentmesh` or `~/.local/share/opencode-agentmesh` | Mesh home directory.                                                                 |
 | `autoRegister`        | `AGENTMESH_AUTO_REGISTER`         | `true`                                                                     | Register automatically on the first user message.                                    |
 | `injectSystemPrompt`  | `AGENTMESH_INJECT_SYSTEM_PROMPT`  | `true`                                                                     | Append the mesh protocol explanation to the system prompt.                           |

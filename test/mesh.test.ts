@@ -1125,11 +1125,21 @@ describe("mesh", () => {
     assert.equal(b.injected.length, 0)
   })
 
-  it("auto-registers with an id derived from the worktree name", async () => {
+  it("auto-registers a sayable name instead of a directory name", async () => {
     const { a, b } = await twoAgents()
-    assert.equal(await a.mesh.autoRegister(sessionContext("ses_a", "/tmp/My Project")), "my-project")
-    // A second session in the same directory gets a distinct id, not a clash.
-    assert.equal(await b.mesh.autoRegister(sessionContext("ses_b", "/tmp/My Project")), "my-project-2")
+    const first = await a.mesh.autoRegister(sessionContext("ses_a", "/tmp/My Project"))
+    assert.ok(first)
+    assert.match(first, /^[a-z]+-[a-z]+$/)
+    // A second session in the same directory gets its own name, not `name-2`.
+    const second = await b.mesh.autoRegister(sessionContext("ses_b", "/tmp/My Project"))
+    assert.ok(second)
+    assert.match(second, /^[a-z]+-[a-z]+$/)
+    assert.notEqual(second, first)
+  })
+
+  it("keeps a pinned config id instead of a generated name", async () => {
+    const { a } = await twoAgents({ id: "pinned-name" })
+    assert.equal(await a.mesh.autoRegister(sessionContext("ses_a", "/tmp/My Project")), "pinned-name")
   })
 
   it("removes an agent from the registry when its session is deleted", async () => {

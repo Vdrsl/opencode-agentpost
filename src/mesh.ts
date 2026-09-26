@@ -127,7 +127,7 @@ export class Mesh {
     return this.agents.get(sessionID)?.id
   }
 
-  /** Default id for a session: the worktree directory name, slugified. */
+  /** Id for a session that pinned one in the config, else the directory name. */
   preferredId(context: SessionContext): string {
     if (this.config.id) return slugify(this.config.id)
     return slugify(path.basename(context.worktree || context.directory) || "agent")
@@ -216,7 +216,12 @@ export class Mesh {
   async autoRegister(context: SessionContext): Promise<string | undefined> {
     if (!this.config.autoRegister) return undefined
     if (this.agents.has(context.sessionID)) return this.agents.get(context.sessionID)!.id
-    const id = await this.registry.allocateId(this.preferredId(context), context.sessionID)
+    // A pinned id is the operator's choice and keeps its directory-free form;
+    // otherwise the name is hashed from the session, not the directory, so two
+    // chats in one directory never end up as `repo` and `repo-2`.
+    const id = this.config.id
+      ? await this.registry.allocateId(this.preferredId(context), context.sessionID)
+      : await this.registry.allocateName(context.sessionID)
     const existing = await this.registry.get(id)
     const reuse =
       existing && existing.record.routing.sessionID === context.sessionID
