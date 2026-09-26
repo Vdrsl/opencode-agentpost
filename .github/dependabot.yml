@@ -1,11 +1,11 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
+# Dependabot version updates. The only ecosystem here is npm: the manifest and
+# its lockfile live at the repo root, and the repo has no GitHub Actions
+# workflows yet. Add a "github-actions" entry when it does.
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "npm" # @opencode-ai/plugin, typescript, @types/node
+    directory: "/" # package.json + package-lock.json
     schedule:
       interval: "weekly"
