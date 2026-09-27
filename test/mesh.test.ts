@@ -13,7 +13,7 @@ import { enqueue, InboxWatcher, readAck, readProcessedDepth, readProcessedThread
 import { newMessageId } from "../src/ids.ts"
 import { readOutboxEntry, sweepOutbox, writeOutboxEntry } from "../src/outbox.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
-import { resolveConfig, TOOL_REGISTER } from "../src/config.ts"
+import { resolveConfig, TOOL_FETCH, TOOL_REGISTER } from "../src/config.ts"
 import { noopLogger } from "../src/logger.ts"
 import { buildTools } from "../src/tools.ts"
 import { type ClaimMeta, MeshError, PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "../src/types.ts"
@@ -749,6 +749,7 @@ describe("mesh", () => {
     // of this message survives.
     assert.deepEqual(await readOutboxEntry(config, sent.messageId), {
       id: sent.messageId,
+      from: "planner",
       to: "reviewer",
       threadId: sent.messageId,
       state: "accepted",
@@ -839,6 +840,108 @@ describe("mesh", () => {
 
     assert.deepEqual(await sweepOutbox(config), { reconciled: 0, marked: 0, removed: 1 })
     assert.equal(await readOutboxEntry(config, entry.id), undefined)
+  })
+
+  it("lists our own deliveries newest first", async () => {
+    const { config, a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    const first = newMessageId()
+    const second = newMessageId()
+    const now = new Date().toISOString()
+    await writeOutboxEntry(config, { id: first, from: "planner", to: "reviewer", state: "accepted", at: now })
+    await writeOutboxEntry(config, { id: second, from: "planner", to: "reviewer", state: "queued", at: now })
+
+    // Filenames are ULIDs, so ordering by name is ordering by time.
+    const mine = await a.mesh.deliveries({ sessionID: "ses_a" })
+    assert.deepEqual(mine.map((entry) => entry.id), [second, first])
+  })
+
+  it("filters deliveries by recipient, by state and by limit", async () => {
+    const { config, a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    const now = new Date().toISOString()
+    const toReviewer = newMessageId()
+    const toAuditor = newMessageId()
+    const queued = newMessageId()
+    await writeOutboxEntry(config, { id: toReviewer, from: "planner", to: "reviewer", state: "accepted", at: now })
+    await writeOutboxEntry(config, { id: toAuditor, from: "planner", to: "auditor", state: "accepted", at: now })
+    await writeOutboxEntry(config, { id: queued, from: "planner", to: "reviewer", state: "queued", at: now })
+
+    assert.deepEqual(
+      (await a.mesh.deliveries({ sessionID: "ses_a", to: "auditor" })).map((entry) => entry.id),
+      [toAuditor],
+    )
+    assert.deepEqual(
+      (await a.mesh.deliveries({ sessionID: "ses_a", state: "queued" })).map((entry) => entry.id),
+      [queued],
+    )
+    const limited = await a.mesh.deliveries({ sessionID: "ses_a", limit: 2 })
+    assert.deepEqual(limited.map((entry) => entry.id), [queued, toAuditor])
+  })
+
+  it("keeps one agent's outbox out of another agent's deliveries", async () => {
+    const { config, a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    const notMine = newMessageId()
+    await writeOutboxEntry(config, {
+      id: notMine,
+      from: "auditor",
+      to: "reviewer",
+      state: "accepted",
+      at: new Date().toISOString(),
+    })
+
+    assert.deepEqual(await a.mesh.deliveries({ sessionID: "ses_a" }), [])
+  })
+
+  it("fetches inbox messages that were never injected", async () => {
+    const { config, a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    const injected = newMessageId()
+    const missed = newMessageId()
+    await enqueue(config, { ...leaseMessageWithId(injected), to: "planner", from: "reviewer" })
+    await enqueue(config, { ...leaseMessageWithId(missed), to: "planner", from: "reviewer" })
+    await fs.mkdir(config.processedDir, { recursive: true })
+    await writeJsonAtomic(path.join(config.processedDir, `${injected}.json`), {
+      id: injected,
+      at: new Date().toISOString(),
+      depth: 0,
+    })
+
+    const fetched = await a.mesh.fetch({ sessionID: "ses_a" })
+    assert.deepEqual(fetched.map((message) => message.id), [missed])
+  })
+
+  it("returns the newest messages within the limit, oldest first", async () => {
+    const { a } = await twoAgents()
+    const aContext = sessionContext("ses_a", "/tmp/planner")
+    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+    const first = newMessageId()
+    const second = newMessageId()
+    await enqueue(a.mesh.config, { ...leaseMessageWithId(first), to: "planner", from: "reviewer" })
+    await enqueue(a.mesh.config, { ...leaseMessageWithId(second), to: "planner", from: "reviewer" })
+
+    // Fetch is a read: it never deletes, so the watcher still owns delivery.
+    const fetched = await a.mesh.fetch({ sessionID: "ses_a", limit: 1 })
+    assert.deepEqual(fetched.map((message) => message.id), [second])
+  })
+
+  it("tells an unregistered session to register before fetching", async () => {
+    const { a } = await twoAgents()
+    const tools = buildTools(a.mesh, "http://127.0.0.1:4096")
+    const fetch = tools[TOOL_FETCH] as unknown as {
+      execute: (args: unknown, ctx: { sessionID: string }) => Promise<{ output: string }>
+    }
+
+    const result = await fetch.execute(
+      {},
+      { sessionID: "ses_never_registered", directory: "/tmp/x", worktree: "" },
+    )
+    assert.match(result.output, /not on the mesh yet/)
   })
 
   it("reads an older processed marker without a depth as zero", async () => {

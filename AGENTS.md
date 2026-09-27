@@ -89,6 +89,14 @@ Correctness rests on facts that are easy to break accidentally:
   can move a delivered message off `queued` — and turns an entry that never got a verdict into
   `undeliverable` before deleting it a window later: the recipient was gone, not the message. Any
   new per-message state follows this split, not a shared file.
+- **Reading the mailbox is never the delivery path.** Injection is: the recipient's own watcher
+  claims a message, injects it, stamps `processed/<msgid>.json` and only then deletes the inbox
+  copy. `agentmesh_fetch` is the read-only escape hatch for the message that never got that far
+  (a crashed session, or one still held by a busy session) and it **excludes anything with a
+  processed marker**, so a model can never be shown a turn it already saw. It must never delete
+  what it reads: the watcher is still the only owner of that decision. `agentmesh_deliveries`
+  reads `outbox/` filtered by the entry's `from` — that field is the only reason a shared outbox
+  directory can stay owner-private, so write it on every entry.
 - **Activity is a separate `utimes` file, `<home>/activity/<id>`.** It is touched on every
   `chat.message` and `session.idle`, never a rewrite of `agents/<id>.json` — a rewrite would
   open a rename window where a peer's `list()` sees ENOENT and the peer vanishes. Peers read it

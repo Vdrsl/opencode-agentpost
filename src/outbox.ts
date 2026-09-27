@@ -24,6 +24,7 @@ export type OutboxState = "queued" | "accepted" | "failed" | "ambiguous" | "unde
 
 export type OutboxEntry = {
   id: string
+  from: string
   to: string
   threadId?: string
   state: OutboxState
@@ -57,6 +58,37 @@ export async function readOutboxEntry(
   if (!isMessageId(messageId)) return undefined
   const raw = await readJson<OutboxEntry>(outboxPath(config, messageId))
   return raw && raw.id === messageId ? raw : undefined
+}
+
+/**
+ * Every entry we sent, newest last. Filenames are ULIDs, so sorting by name is
+ * sorting by time — no second clock to keep in sync. Entries written before
+ * `from` existed have none, and a message nobody can attribute is not ours to
+ * report, so they are skipped.
+ */
+export async function listOutboxEntries(config: MeshConfig): Promise<OutboxEntry[]> {
+  const entries: OutboxEntry[] = []
+  for (const name of await listJsonFiles(config.outboxDir)) {
+    const entry = await readJson<OutboxEntry>(path.join(config.outboxDir, name)).catch(
+      () => undefined,
+    )
+    if (entry && entry.id === name.slice(0, -".json".length) && entry.from) entries.push(entry)
+  }
+  return entries
+}
+
+/** Our own outbox, newest first, for `agentmesh_deliveries`. */
+export async function getDeliveries(
+  config: MeshConfig,
+  from: string,
+  filter: { to?: string; state?: OutboxState } = {},
+  limit = 20,
+): Promise<OutboxEntry[]> {
+  const entries = (await listOutboxEntries(config)).filter((entry) => entry.from === from)
+  const filtered = entries.filter(
+    (entry) => (!filter.to || entry.to === filter.to) && (!filter.state || entry.state === filter.state),
+  )
+  return filtered.slice(-limit).reverse()
 }
 
 /**

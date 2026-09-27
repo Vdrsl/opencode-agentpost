@@ -55,7 +55,11 @@ function processedPath(config: MeshConfig, messageId: string): string {
   return path.join(config.processedDir, `${messageId}.json`)
 }
 
-async function hasProcessedMarker(config: MeshConfig, messageId: string): Promise<boolean> {
+/**
+ * Did we already inject this message? The marker is the only durable proof,
+ * because the inbox copy is deleted the moment delivery succeeds.
+ */
+export async function hasProcessedMarker(config: MeshConfig, messageId: string): Promise<boolean> {
   const marker = await readJson<{ id?: unknown }>(processedPath(config, messageId))
   return marker?.id === messageId
 }

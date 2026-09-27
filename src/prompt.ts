@@ -6,7 +6,7 @@
  * telling the model to go find out.
  */
 
-import { TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
+import { TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
 
 export function systemPrompt(options: {
   selfId?: string
@@ -21,11 +21,13 @@ export function systemPrompt(options: {
   return `# Agent mesh
 
 Other opencode agents are running in other directories, and you can talk to
-them. Three tools:
+them. Five tools:
 
 - \`${TOOL_REGISTER}\` — publish who you are and what you own.
 - \`${TOOL_PEERS}\` — list the agents on the mesh right now.
 - \`${TOOL_SEND}\` — send one message to one of them.
+- \`${TOOL_DELIVERIES}\` — check the delivery state of messages you sent.
+- \`${TOOL_FETCH}\` — fallback: read inbox messages that were never injected.
 
 ${identity}
 
@@ -95,12 +97,28 @@ ${identity}
 
 7. **Reply chains are bounded.** The mesh rejects replies beyond
        ${options.maxReplyDepth} levels. If you hit the limit, start a new topic by
-       omitting \`in_reply_to\` and reference the prior conversation in the text:
-       "Continuing our discussion about T-001 auth review from earlier..."
+    omitting \`in_reply_to\` and reference the prior conversation in the text:
+    "Continuing our discussion about T-001 auth review from earlier..."
 
 8. **Keep it a side channel.** Reference paths, never paste file contents.
    Never include API keys, tokens, passwords, private keys, or credentials —
    the mesh is a filesystem-based channel, not encrypted transport. Reference
    secret locations (env var names, vault paths) and let the peer read them
-   itself. ${options.maxTextLength} characters max.`
+   itself. ${options.maxTextLength} characters max.
+
+## Fallback and verification
+
+Mail is delivered by injection, not by reading: a message that reached the
+recipient's session arrives as a new user turn, and nothing is required of you.
+
+- **Checking what you sent.** \`${TOOL_SEND}\` only waits a few seconds for a
+   confirmation. If a peer went quiet and you need to know whether the message
+   landed, call \`${TOOL_DELIVERIES}\`. \`undeliverable\` means nobody ever
+   confirmed it and it is gone — resend it as a new message, and reference the
+   original instead of repeating it. \`queued\` and \`ambiguous\` are not
+   verdicts: the recipient may still inject them.
+- **Messages you may have missed.** \`${TOOL_FETCH}\` returns the inbox
+   messages that were never injected — the leftovers of a crashed session or of
+   a busy one. Do not poll it: nothing arrives faster because you look, and
+   anything already injected is filtered out for you.`
 }

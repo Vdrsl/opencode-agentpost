@@ -23,6 +23,8 @@ export const TOOL_PREFIX = "agentmesh"
 export const TOOL_REGISTER = `${TOOL_PREFIX}_register`
 export const TOOL_PEERS = `${TOOL_PREFIX}_peers`
 export const TOOL_SEND = `${TOOL_PREFIX}_send`
+export const TOOL_DELIVERIES = `${TOOL_PREFIX}_deliveries`
+export const TOOL_FETCH = `${TOOL_PREFIX}_fetch`
 
 /** Options accepted via `"plugin": [["opencode-agentmesh", { ... }]]`. */
 export type MeshOptions = {

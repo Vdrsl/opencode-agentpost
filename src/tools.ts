@@ -8,7 +8,7 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 
-import { TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
+import { TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "./config.ts"
 import type { Mesh, SessionContext } from "./mesh.ts"
 
 const REGISTER_DESCRIPTION = `Publish this agent on the mesh so other opencode agents can discover and message it. Call it once near the start of a session, and again whenever your role or scope changes.
@@ -32,6 +32,14 @@ The peer sees NO context from your session — write self-contained: what you ne
 A peer whose session is busy reports "queued": the message stays in its inbox and is injected as soon as that session goes idle. That is normal — do not resend it.
 You can send to an agent that is offline: the message is kept in its inbox and delivered when it comes back, for as long as that inbox exists. "stale" means not heartbeating right now, not gone.
 Use context as a short topic tag (e.g. "T-001 contract"). If no reply comes within a few minutes, check ${TOOL_PEERS} before re-sending.`
+
+const DELIVERIES_DESCRIPTION = `Check what became of the messages you sent: id, recipient, delivery state, timestamp. Newest first.
+States: "queued" (in the recipient's inbox, no confirmation yet), "accepted" (it became a user turn in their session), "failed" (they got it but could not inject it), "ambiguous" (outcome unknown), "undeliverable" (nobody confirmed before it aged out).
+Use it when a peer went quiet and you need to know whether the message landed, before resending anything. Do not poll it in a loop.`
+
+const FETCH_DESCRIPTION = `Fallback only: read the messages sitting in your own inbox that were never injected (for example after a session crash, or while a busy session still holds them).
+Mail normally arrives as a new user turn on its own — this tool is not the way to read mail, and polling it does not make anything arrive faster. Messages already injected are excluded, so nothing shows up twice.
+Returns an empty list when there is nothing missed.`
 
 export function buildTools(
   mesh: Mesh,
@@ -146,6 +154,76 @@ export function buildTools(
           title: `${result.status} -> ${result.to}`,
           output: JSON.stringify(result, null, 2),
           metadata: { status: result.status, to: result.to, messageId: result.messageId },
+        }
+      },
+    }),
+
+    [TOOL_DELIVERIES]: tool({
+      description: DELIVERIES_DESCRIPTION,
+      args: {
+        to: tool.schema
+          .string()
+          .optional()
+          .describe("Filter by recipient agent id."),
+        state: tool.schema
+          .enum(["queued", "accepted", "failed", "ambiguous", "undeliverable"])
+          .optional()
+          .describe("Filter by delivery state."),
+        limit: tool.schema
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("How many records to return, newest first. Default 20, max 100."),
+      },
+      async execute(args, ctx) {
+        if (!mesh.selfId(ctx.sessionID)) {
+          return {
+            title: "not registered",
+            output: `This session is not on the mesh yet, so it has no deliveries: call ${TOOL_REGISTER} first.`,
+            metadata: { count: 0 },
+          }
+        }
+        const deliveries = await mesh.deliveries({
+          sessionID: ctx.sessionID,
+          ...(args.to ? { to: args.to } : {}),
+          ...(args.state ? { state: args.state } : {}),
+          limit: Math.min(args.limit ?? 20, 100),
+        })
+        return {
+          title: `${deliveries.length} delivery record${deliveries.length === 1 ? "" : "s"}`,
+          output: JSON.stringify({ deliveries }, null, 2),
+          metadata: { count: deliveries.length },
+        }
+      },
+    }),
+
+    [TOOL_FETCH]: tool({
+      description: FETCH_DESCRIPTION,
+      args: {
+        limit: tool.schema
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("How many messages to return, oldest first. Default 10, max 50."),
+      },
+      async execute(args, ctx) {
+        if (!mesh.selfId(ctx.sessionID)) {
+          return {
+            title: "not registered",
+            output: `This session is not on the mesh yet: call ${TOOL_REGISTER} first.`,
+            metadata: { count: 0 },
+          }
+        }
+        const messages = await mesh.fetch({
+          sessionID: ctx.sessionID,
+          limit: Math.min(args.limit ?? 10, 50),
+        })
+        return {
+          title: `${messages.length} unprocessed message${messages.length === 1 ? "" : "s"}`,
+          output: JSON.stringify({ messages }, null, 2),
+          metadata: { count: messages.length },
         }
       },
     }),

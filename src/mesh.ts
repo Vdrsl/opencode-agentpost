@@ -16,6 +16,7 @@ import type { Logger } from "./logger.ts"
 import { renderEnvelope } from "./envelope.ts"
 import {
   enqueue,
+  hasProcessedMarker,
   inboxDirFor,
   InboxWatcher,
   readProcessedDepth,
@@ -24,8 +25,9 @@ import {
   waitForAck,
 } from "./inbox.ts"
 import { isMessageId, newMessageId } from "./ids.ts"
-import { sweepOutbox, writeOutboxEntry } from "./outbox.ts"
+import { type OutboxEntry, type OutboxState, getDeliveries, sweepOutbox, writeOutboxEntry } from "./outbox.ts"
 import { Registry } from "./registry.ts"
+import { listJsonFiles, readJson } from "./store.ts"
 import {
   type AgentRouting,
   ErrorCode,
@@ -412,7 +414,7 @@ export class Mesh {
     if (input.context_tag) message.context = input.context_tag
     if (input.in_reply_to) message.in_reply_to = input.in_reply_to
     await enqueue(this.config, message)
-    const record = { id, to: input.to, threadId: message.threadId }
+    const record = { id, from, to: input.to, threadId: message.threadId }
     await writeOutboxEntry(this.config, {
       ...record,
       state: "queued",
@@ -454,5 +456,49 @@ export class Mesh {
       text: renderEnvelope(message),
     })
     this.deps.logger("info", "message_accepted")
+  }
+
+  /** What became of the messages this session sent, newest first. */
+  async deliveries(input: {
+    sessionID: string
+    to?: string
+    state?: OutboxState
+    limit?: number
+  }): Promise<OutboxEntry[]> {
+    const from = this.agents.get(input.sessionID)?.id
+    if (!from) return []
+    return getDeliveries(
+      this.config,
+      from,
+      {
+        ...(input.to ? { to: input.to } : {}),
+        ...(input.state ? { state: input.state } : {}),
+      },
+      input.limit ?? 20,
+    )
+  }
+
+  /**
+   * The messages in our own inbox that were never injected, oldest first.
+   *
+   * Injection is the primary path and the watcher deletes each message as it
+   * delivers it, so this is nearly always empty: it exists for the message that
+   * arrived while the session was crashing, or for one still waiting behind a
+   * busy session. Anything with a processed marker is excluded, because the
+   * model already saw it as a turn and must not see it twice.
+   */
+  async fetch(input: { sessionID: string; limit?: number }): Promise<MeshMessage[]> {
+    const id = this.agents.get(input.sessionID)?.id
+    if (!id) return []
+    const dir = inboxDirFor(this.config, id)
+    const messages: MeshMessage[] = []
+    for (const name of (await listJsonFiles(dir)).slice(-(input.limit ?? 10)).reverse()) {
+      const message = await readJson<MeshMessage>(path.join(dir, name)).catch(() => undefined)
+      if (!message || !isMessageId(message.id)) continue
+      if (message.from === id) continue
+      if (await hasProcessedMarker(this.config, message.id)) continue
+      messages.push(message)
+    }
+    return messages.reverse()
   }
 }

@@ -61,6 +61,8 @@ you send your first message, and gets three tools:
 | `agentmesh_register` | Publish this agent's id, description, and metadata so peers can find it. Called automatically; call it again to update your description or change your id. |
 | `agentmesh_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, `idleMs` (ms since its last turn), directory. Freshest first. |
 | `agentmesh_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `in_reply_to` with the incoming `msg` id for correlated replies (`reply_to` remains a legacy alias). |
+| `agentmesh_deliveries` | Check what became of the messages you sent: recipient, state (`queued`, `accepted`, `failed`, `ambiguous`, `undeliverable`), timestamp. Newest first, filterable by `to` and `state`. |
+| `agentmesh_fetch`    | Fallback read of your own inbox: messages that were never injected (after a crash, or still held by a busy session). Excludes anything already injected, so nothing is shown twice. |
 
 A message sent to a peer that's offline stays in the durable inbox. The recipient's
 plugin watches it, claims it with a lease, retries failed injection up to
@@ -135,6 +137,15 @@ the ack, so a message a busy recipient accepted after the sender stopped
 waiting still ends up `accepted`. A conversation is just its
 root message id: a reply carries the same `threadId` it inherited, and every
 participant agrees on it without coordinating.
+
+Delivery stays inject-primary: mail becomes a user turn, and `agentmesh_send`
+waits only `ackWaitMs` for the ack. Two read-only tools cover the rest.
+`agentmesh_deliveries` reports the state of what you sent, so a peer that went
+quiet can be told apart from a message that never landed. `agentmesh_fetch`
+returns the inbox messages that were never injected — the leftovers of a crashed
+or busy session — and is a fallback, not a way to read mail: anything already
+injected is filtered out by its `processed/` marker, so the model never sees a
+turn twice.
 
 A live process is not the same as a human at the keyboard, so every agent also
 gets an `activity/<id>` file touched on each session turn. Peers report it as

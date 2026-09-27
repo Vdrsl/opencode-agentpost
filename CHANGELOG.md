@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Phase 3: Fetch & deliveries tools
+- Add `agentmesh_deliveries`: read your own outbox entries — recipient, state, timestamp — with optional `to`/`state` filters and a limit.
+- Add `agentmesh_fetch`: read-only fallback that returns the inbox messages which were never injected, excluding anything with a `processed/` marker so an already-seen turn is never shown twice.
+- Stamp `from` on every outbox entry: the directory is shared, and that field is what keeps one agent's deliveries out of another's.
+- Update the system prompt with explicit rules: delivery stays inject-primary, `fetch` is crash recovery rather than a polling loop, and `undeliverable` means resend rather than wait.
+
 ## v0.10.0 — Phase 2: Delivery state
 
 - Add `threadId` to every message: a thread is its root message id, and a reply inherits the root its own `processed/<msgid>.json` marker remembers, so the same id chain is on both sides without coordination. Replies show `| thread: agm_…` in the envelope header.
