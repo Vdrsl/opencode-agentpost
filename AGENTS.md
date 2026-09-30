@@ -69,9 +69,9 @@ Correctness rests on facts that are easy to break accidentally:
   (`InboxWatcher.recoverClaimed`). This invariant is **only observable on Windows**: mutation
   testing replaced `fs.link` with `fs.rename` and nine cases failed, all of them on the Windows leg of
   the `claim-race` job — the mutation passes on ubuntu and macos, where rename is atomic anyway. The
-  main test matrix runs ubuntu and macos only, so it cannot catch this at all. Nine cases in four
-  files guard it: C9/C10/C11, the `hasMore` claim test, two watchers on one id, both concurrent-fetch
-  tests, and both 2/4-consumer contest tests.
+  main test matrix runs ubuntu and macos only, so it cannot catch this at all. Which cases guard it is
+  decided by the `claim-race` job in `ci.yml` — that is the source of truth, and a list written here
+  would be a second one that rots the first time a test is added.
 - **Recovery consolidates two names only in the branch that takes the claim over.** A crash between
   link and drop leaves the pending name as the lie, and dropping it is what stops every later drain
   from losing a claim race against it forever. But it may only be dropped once recovery is actually

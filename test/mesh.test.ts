@@ -13,7 +13,13 @@ import { enqueue, InboxWatcher, readAck, readProcessedDepth, readProcessedThread
 import { newMessageId } from "../src/ids.ts"
 import { readOutboxEntry, sweepOutbox, writeOutboxEntry } from "../src/outbox.ts"
 import { claimFile, readJson, removeFile, writeJsonAtomic } from "../src/store.ts"
-import { resolveConfig, TOOL_FETCH, TOOL_REGISTER } from "../src/config.ts"
+import {
+  resolveConfig,
+  TOOL_DELIVERIES,
+  TOOL_FETCH,
+  TOOL_REGISTER,
+  TOOL_SEND,
+} from "../src/config.ts"
 import { noopLogger } from "../src/logger.ts"
 import { buildTools } from "../src/tools.ts"
 import { type ClaimMeta, MeshError, PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "../src/types.ts"
@@ -135,6 +141,19 @@ describe("mesh", () => {
     const tools = buildTools(a.mesh, "http://127.0.0.1:4096")
     const register = tools[TOOL_REGISTER] as unknown as { args?: Record<string, unknown> }
     assert.equal(register.args && "force" in register.args, false)
+  })
+
+  it("does not promise delivery to a mailbox nobody will read", async () => {
+    // `queued` used to read as "delivered when it comes back, for as long as the
+    // inbox exists". Both halves are wrong for a chat closed normally: the
+    // inbox outlives the presence record and no later session reads it. The model
+    // treats this text as an instruction, so the boundary has to be in it.
+    const { a } = await twoAgents()
+    const tools = buildTools(a.mesh, "http://127.0.0.1:4096")
+    const send = tools[TOOL_SEND] as unknown as { description?: string }
+    assert.match(send.description ?? "", /queued" has a shelf life, not a guarantee/)
+    // And it must point at the way to find out, not just at the limit.
+    assert.match(send.description ?? "", new RegExp(TOOL_DELIVERIES))
   })
 
   it("writes lease metadata into a claimed message", async () => {

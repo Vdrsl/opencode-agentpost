@@ -39,11 +39,11 @@ jobs:
   # about a probabilistic failure.
   #
   # windows-latest is here and ONLY here, and that is not redundancy. Mutation
-  # testing (conducive-kestrel, 0.13.0) replaced fs.link with fs.rename and nine
-  # cases failed — every one of them on this job's Windows leg. The mutation
-  # passes on ubuntu and macos, because rename IS atomic there, so the main
-  # `test` matrix cannot observe this invariant at all. Dropping windows from
-  # this job removes the only place the claim primitive is checked.
+  # testing (conducive-kestrel, 0.13.0) replaced fs.link with fs.rename and every
+  # case that failed did so on this job's Windows leg — the mutation passes on
+  # ubuntu and macos, because rename IS atomic there, so the main `test` matrix
+  # cannot observe this invariant at all. Dropping windows from this job removes
+  # the only place the claim primitive is checked.
   claim-race:
     runs-on: ${{ matrix.os }}
     strategy:
