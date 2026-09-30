@@ -17,6 +17,26 @@ function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ENOENT"
 }
 
+function isExists(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "EEXIST"
+}
+
+/** Filesystems that cannot hard link at all: FAT32, some network mounts. */
+function unsupportedLink(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
+  return code === "EPERM" || code === "ENOSYS" || code === "ENOTSUP" || code === "EOPNOTSUPP"
+}
+
+export async function fileExists(file: string): Promise<boolean> {
+  try {
+    await fs.lstat(file)
+    return true
+  } catch (error) {
+    if (isMissing(error)) return false
+    throw error
+  }
+}
+
 export async function ensureDir(dir: string): Promise<void> {
   try {
     const existing = await fs.lstat(dir)
@@ -146,8 +166,18 @@ export async function touch(file: string): Promise<boolean> {
 }
 
 /**
- * Claim a file by renaming it. Exactly one caller can win; everyone else sees
- * ENOENT. Returns the new path, or `undefined` if the file was already taken.
+ * Claim a file by hard-linking it to `<file>.taken` and dropping the original
+ * name. Exactly one caller can win; everyone else sees EEXIST.
+ *
+ * This started out as a `rename`, and that was wrong on Windows: two concurrent
+ * renames of the same source both resolved successfully there, measured, so two
+ * delivery paths could both believe they owned the same message. Hard link
+ * creation is exclusive by definition on every platform we support, which is
+ * the property the whole at-most-once delivery model rests on.
+ *
+ * Hard links are unavailable on some filesystems (FAT32, some network mounts),
+ * so those failures fall back to `rename`: still correct where rename is atomic,
+ * and no worse than what we shipped before.
  */
 export async function claimFile(
   file: string,
@@ -156,11 +186,34 @@ export async function claimFile(
 ): Promise<string | undefined> {
   const claimed = `${file}${suffix}`
   try {
-    await fs.rename(file, claimed)
+    // Only the link error decides whether hard links work here. A later failure
+    // in this function must not be mistaken for "no link support", or a
+    // transient Windows lock on the rm below would drop us into the rename
+    // fallback — the primitive measured non-atomic on this platform.
+    await fs.link(file, claimed)
   } catch (error) {
-    if (isMissing(error)) return undefined
-    throw error
+    // EEXIST means someone else holds the claim. That is the normal losing
+    // outcome, not a failure: there is exactly one winner by construction.
+    if (isMissing(error) || isExists(error)) return undefined
+    if (!unsupportedLink(error)) throw error
+    try {
+      await fs.rename(file, claimed)
+    } catch (renameError) {
+      if (isMissing(renameError) || isExists(renameError)) return undefined
+      throw renameError
+    }
+    return stampClaim(claimed, claim)
   }
+  // The claim is the fact now; the pending name is what everyone else watches.
+  // If this rm fails the message is still safe — the winner is us either way —
+  // and a crash here leaves two names on one inode, which recovery consolidates.
+  await fs.rm(file, { force: true }).catch(() => {})
+  await stampClaim(claimed, claim)
+  return claimed
+}
+
+/** Record the lease on a claimed file. Losing it is recoverable, not fatal. */
+async function stampClaim(claimed: string, claim: ClaimMeta): Promise<string> {
   try {
     const raw = await readJson<Record<string, unknown>>(claimed)
     if (raw) {

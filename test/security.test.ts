@@ -7,7 +7,7 @@ import { assertValidId, type MeshConfig, slugify } from "../src/config.ts"
 import { renderEnvelope } from "../src/envelope.ts"
 import { InboxWatcher, readAck, waitForAck } from "../src/inbox.ts"
 import { newMessageId } from "../src/ids.ts"
-import { ensureDir, listJsonFiles, writeJsonAtomic } from "../src/store.ts"
+import { claimFile, ensureDir, listJsonFiles, writeJsonAtomic } from "../src/store.ts"
 import type { MeshMessage } from "../src/types.ts"
 import { noopLogger } from "../src/logger.ts"
 import { tempHome, testConfig, waitFor } from "./helpers.ts"
@@ -32,6 +32,32 @@ function message(overrides: Partial<MeshMessage> = {}): MeshMessage {
     ...overrides,
   }
 }
+
+describe("claim primitive", () => {
+  // The whole at-most-once delivery model rests on this: a rename was used
+  // before, and on Windows two concurrent renames of one source both succeed,
+  // so two delivery paths could each believe they owned the same message.
+  for (const consumers of [2, 4]) {
+    it(`gives a contested message to exactly one of ${consumers} consumers`, async () => {
+      const home = await tempHome()
+      const file = path.join(home, "contested.json")
+      await writeJsonAtomic(file, { schemaVersion: 1, id: "contested" })
+      const claim = {
+        ownerInstance: "owner-a",
+        incarnation: "incarnation-a",
+        sessionID: "ses_a",
+        claimedAt: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        attempt: 1,
+      }
+
+      const results = await Promise.all(
+        Array.from({ length: consumers }, () => claimFile(file, ".taken", claim)),
+      )
+      assert.equal(results.filter(Boolean).length, 1)
+    })
+  }
+})
 
 describe("security boundaries", () => {
   it("accepts ordinary IDs", () => {
