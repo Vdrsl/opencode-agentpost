@@ -188,7 +188,18 @@ Correctness rests on facts that are easy to break accidentally:
 
 ## Security and limitations
 
-The shared home directory is trusted storage, not encrypted transport or an authorization boundary.
+**The home directory is trusted. The mesh is not an authorization boundary.** Any process that can
+write there can forge a registration, a message, an acknowledgement or a processed marker, because
+every one of those is a plain file written directly — validation inside the mesh never sees them.
+That is why an inbound policy (`accept`/`auto`/`hold`/`refuse`) was rejected rather than deferred: it
+filters only callers who already follow the rules, which is to say our own peers. A rule as narrow as
+"only from registered senders" fails the same way — a stranger simply writes itself an
+`agents/<id>.json` and is registered. The boundary is the filesystem permissions on the home
+directory and the operator's judgment, not anything in `src/`. If the mesh ever spans machines or
+untrusted users, this model is rebuilt from scratch: sender signatures, real authorization,
+authenticated transport. Not a mail filter. `maxInboxMessages`/`maxInboxBytes` are robustness against
+flooding, not security.
+
 Local `processed/` markers suppress replay after a successful injection but do not make the
 filesystem handoff transactional or exactly-once. `accepted` confirms asynchronous prompt
 acceptance, not peer comprehension; `ambiguous` outcomes require operator judgment. Keep security
