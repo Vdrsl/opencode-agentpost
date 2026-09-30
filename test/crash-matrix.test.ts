@@ -8,7 +8,7 @@ import { InboxWatcher } from "../src/inbox.ts"
 import { newMessageId } from "../src/ids.ts"
 import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
 import type { ClaimMeta, MeshMessage } from "../src/types.ts"
-import { testConfig, waitFor } from "./helpers.ts"
+import { testConfig, waitFor, stageLiveClaim, expireClaim } from "./helpers.ts"
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -411,6 +411,46 @@ await watcher.start()
       const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
       assert.equal(ack?.["status"], "accepted")
       assert.equal(await exists(f.claimed(msg.id)), false)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+
+  // A declined claim must leave the message visible, and an expired one must be
+  // delivered exactly once. Staged through the shared helper rather than by
+  // enqueueing and then writing the claim: a running watcher claims the message
+  // the moment enqueue returns, so the test would race the thing it sets up and
+  // pass without ever entering the branch it was written for.
+  it("C10 holds a message whose live claim it declines, then delivers it once", async () => {
+    const f = await fixture({ leaseDurationMs: 60_000 })
+    const msg = { ...message(), to: "reviewer" }
+    const { taken } = await stageLiveClaim(f.inbox, msg, 60_000)
+
+    let injected = 0
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_a",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await watcher.start()
+      // A lease nobody gave up: the owner may still be injecting, so recovery
+      // declines and both names stay — a lone `.taken` is not a `.json` file and
+      // would leave a directory that looks empty with the mail inside it.
+      await sleep(120)
+      assert.equal(injected, 0)
+      assert.equal(await exists(f.pending(msg.id)), true)
+      assert.equal(await exists(taken), true)
+
+      await expireClaim(taken)
+      await waitFor(() => injected === 1)
+      assert.equal(await exists(f.pending(msg.id)), false)
+      assert.equal(await exists(taken), false)
+      assert.equal(await exists(f.processed(msg.id)), true)
     } finally {
       await stopAndRemove(f.home, watcher)
     }

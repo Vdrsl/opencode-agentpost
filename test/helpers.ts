@@ -5,6 +5,8 @@ import path from "node:path"
 import { type MeshConfig, resolveConfig } from "../src/config.ts"
 import { Mesh, type SessionContext } from "../src/mesh.ts"
 import { noopLogger } from "../src/logger.ts"
+import { writeJsonAtomic } from "../src/store.ts"
+import type { MeshMessage } from "../src/types.ts"
 
 export async function tempHome(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-test-"))
@@ -57,4 +59,41 @@ export async function waitFor(
  */
 export async function messageFiles(dir: string): Promise<string[]> {
   return (await fs.readdir(dir).catch(() => [])).filter((name) => name.endsWith(".json"))
+}
+
+/**
+ * A live claim on a message: both names on one inode, holding a lease nobody has
+ * given up. Stage it before the watcher exists, because a running one claims the
+ * message the moment `enqueue` returns — a test that writes the claim afterwards
+ * races the very thing it means to set up, and then passes without touching the
+ * branch it was written for.
+ */
+export async function stageLiveClaim(
+  inboxDir: string,
+  message: MeshMessage,
+  leaseMs = 60_000,
+): Promise<{ pending: string; taken: string }> {
+  const pending = path.join(inboxDir, `${message.id}.json`)
+  const taken = `${pending}.taken`
+  await fs.mkdir(inboxDir, { recursive: true })
+  await writeJsonAtomic(taken, {
+    ...message,
+    _claim: {
+      ownerInstance: "other-instance",
+      incarnation: "other-incarnation",
+      sessionID: "other-session",
+      claimedAt: new Date().toISOString(),
+      leaseExpiresAt: new Date(Date.now() + leaseMs).toISOString(),
+      attempt: 1,
+    },
+  })
+  await fs.link(taken, pending)
+  return { pending, taken }
+}
+
+/** Rewrite a staged claim with a lease that expired `expiredMs` ago. */
+export async function expireClaim(taken: string, expiredMs = 1_000): Promise<void> {
+  const raw = JSON.parse(await fs.readFile(taken, "utf8"))
+  raw._claim.leaseExpiresAt = new Date(Date.now() - expiredMs).toISOString()
+  await writeJsonAtomic(taken, raw)
 }

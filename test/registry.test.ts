@@ -301,4 +301,28 @@ describe("registry", () => {
     await fs.utimes(registry.activityPath("planner"), new Date(ahead), new Date(ahead))
     assert.equal(registry.toPeerView((await registry.get("planner"))!).idleMs, 0)
   })
+
+  // The negative case of address inheritance, and the one that matters: two
+  // registries on two homes are two meshes that cannot see each other, so the
+  // newcomer must mint its own name. If it inherited across homes it would take
+  // an address whose mailbox lives somewhere else, orphaning that mailbox in
+  // silence — no error, just a name that is wrong and mail that never arrives.
+  // A test that builds a second home by accident therefore fails here instead
+  // of quietly testing a product that is not there.
+  it("mints its own name when the predecessor lives in another home", async () => {
+    const predecessor = await newRegistry()
+    await predecessor.register({
+      id: "planner",
+      description: "was here first",
+      routing: routing("ses_old", "/tmp/My Project"),
+    })
+    const gone = (await predecessor.get("planner"))!.record
+    gone.pid = 2 ** 30
+    await writeJsonAtomic(predecessor.recordPath("planner"), gone)
+
+    const stranger = await newRegistry()
+    const inherited = await stranger.inheritableAddress("/tmp/My Project", "ses_new")
+    assert.equal(inherited, undefined)
+    assert.notEqual(await stranger.allocateName("ses_new"), "planner")
+  })
 })
