@@ -66,7 +66,12 @@ Correctness rests on facts that are easy to break accidentally:
   message. A hard link is exclusive by definition, `EEXIST` is the normal losing outcome, and a crash
   between link and drop leaves two names on one inode — same file, not two copies, which
   `recoverClaimed` consolidates. Orphaned claims from a crashed process are restored on watcher start
-  (`InboxWatcher.recoverClaimed`).
+  (`InboxWatcher.recoverClaimed`). This invariant is **only observable on Windows**: mutation
+  testing replaced `fs.link` with `fs.rename` and nine cases failed, all of them on the Windows leg of
+  the `claim-race` job — the mutation passes on ubuntu and macos, where rename is atomic anyway. The
+  main test matrix runs ubuntu and macos only, so it cannot catch this at all. Nine cases in four
+  files guard it: C9/C10/C11, the `hasMore` claim test, two watchers on one id, both concurrent-fetch
+  tests, and both 2/4-consumer contest tests.
 - **Recovery consolidates two names only in the branch that takes the claim over.** A crash between
   link and drop leaves the pending name as the lie, and dropping it is what stops every later drain
   from losing a claim race against it forever. But it may only be dropped once recovery is actually
