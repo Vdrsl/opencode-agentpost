@@ -7,11 +7,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         # engines says >=22; tests run TypeScript directly via type stripping,
-        # so both the floor and the current LTS have to work.
+        # so both the floor and the current LTS have to work. macOS is here
+        # because claiming a message relies on an OS primitive being exclusive,
+        # and that is not a given on every platform (see the claim-race job).
+        os: [ubuntu-latest, macos-latest]
         node: ["22", "24"]
     steps:
       - uses: actions/checkout@v7
@@ -23,3 +26,38 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm test
+
+  # The at-most-once delivery model rests on claiming a file being an exclusive
+  # operation. That was false on Windows, where two concurrent renames of one
+  # source both succeed, and it was invisible to a suite where no two claims
+  # ever raced. This job races them on purpose, many times, on every platform we
+  # claim to support — one pass proving "no duplicates today" is not evidence
+  # about a probabilistic failure.
+  claim-race:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm install
+      - name: race the claim primitive
+        run: node --test --experimental-strip-types --test-timeout=60000 test/security.test.ts
+      - name: race it hard
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/claim-race.log"
+          for i in $(seq 1 60); do
+            if ! node --test --experimental-strip-types --test-timeout=60000 \
+              --test-name-pattern="contested message" test/security.test.ts > "$log" 2>&1; then
+              echo "round $i lost its claim:"
+              cat "$log"
+              exit 1
+            fi
+          done
+          echo "claim primitive held over 60 rounds on ${{ matrix.os }}"
