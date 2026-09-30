@@ -1207,7 +1207,7 @@ describe("mesh", () => {
     assert.equal(peers.find((peer) => peer.id === "reviewer")?.self, undefined)
   })
 
-  it("lists peers freshest first, alive before stale, id as the tie-break", async () => {
+  it("lists peers least-idle first, alive before stale, id as the tie-break", async () => {
     const { config, a } = await twoAgents()
     for (const id of ["planner", "fresh", "mid", "ancient", "twin-a", "twin-b", "gone"]) {
       await a.mesh.register({
