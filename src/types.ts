@@ -88,6 +88,15 @@ export type MeshAck = {
 
 export type SendStatus = "accepted" | "queued" | "failed" | "ambiguous"
 
+/**
+ * How a message's body reached the session, stamped into its processed marker.
+ * Both values mean "consumed, never deliver again" — the distinction is for
+ * diagnosis, not for delivery: a fetch-consumed message is gone for good even
+ * if the session dies before the model acts on it, which is the one place
+ * fetch delivery is weaker than a direct inject.
+ */
+export type ProcessedVia = "inject" | "fetch"
+
 export class PromptTimeoutError extends Error {
   readonly timeoutMs: number
 

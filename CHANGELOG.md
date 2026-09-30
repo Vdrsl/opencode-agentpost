@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — Phase 3: Fetch & deliveries tools
+## Unreleased — Phase 3.5: Adaptive delivery
+- Fix a delivery-correctness bug present since the first release: claiming a message used `fs.rename`, and on Windows two concurrent renames of the same source both succeed, so two delivery paths could each believe they owned one message. Claiming is now `fs.link`, which is exclusive by definition; `EEXIST` is the normal losing outcome, and a crash between link and drop leaves two names on one inode that recovery consolidates. This undercuts the at-most-once guarantee, so it is a correctness fix rather than part of the feature below.
+- Adaptive delivery: idle with one pending message injects the body as before; two or more produce a single notice and the model calls `agentmesh_fetch` once for the batch. After `fetchFallbackMs` the fallback body-injects whatever is still pending, so a model that ignores the notice still gets its mail.
+- `agentmesh_fetch` is now consuming: it claims with the same atomic primitive the injector uses, stamps `processed/<msgid>.json` with `via`, and takes the messages out of the inbox. Returns `hasMore` so a batch larger than `fetchLimit` can be paged through.
+- One winner per message id, enforced by the claim itself, so the fetch and the fallback racing for the same file cannot both deliver it.
+- Per-sender ordering is preserved by the monotonic ULID the sender already writes. Ordering between different senders is not a protocol guarantee.
+
+Known edge, documented rather than hidden: a message consumed by `agentmesh_fetch` is not delivered again if the session is aborted between the fetch returning and the model acting on it. A direct inject is stronger, because its text is already in the session history.
+
+## v0.11.0 — Phase 3: Fetch & deliveries tools
 - Add `agentmesh_deliveries`: read your own outbox entries — recipient, state, timestamp — with optional `to`/`state` filters and a limit.
 - Add `agentmesh_fetch`: read-only fallback that returns the inbox messages which were never injected, excluding anything with a `processed/` marker so an already-seen turn is never shown twice.
 - Stamp `from` on every outbox entry: the directory is shared, and that field is what keeps one agent's deliveries out of another's.

@@ -21,6 +21,7 @@ import {
   ageMs,
   claimFile,
   ensureDir,
+  fileExists,
   listJsonFiles,
   readJson,
   readJsonWithMtime,
@@ -36,6 +37,7 @@ import {
   type ClaimMeta,
   type MeshAck,
   type MeshMessage,
+  type ProcessedVia,
 } from "./types.ts"
 
 const CLAIM_SUFFIX = ".taken"
@@ -84,12 +86,14 @@ async function writeProcessedMarker(
   messageId: string,
   depth: number,
   threadId?: string,
+  via?: ProcessedVia,
 ): Promise<void> {
   await writeJsonAtomic(processedPath(config, messageId), {
     id: messageId,
     at: new Date().toISOString(),
     depth,
     threadId,
+    via,
   })
 }
 
@@ -292,6 +296,21 @@ export async function reapAcks(config: MeshConfig, now: number = Date.now()): Pr
 
 export type InboxHandler = (message: MeshMessage) => Promise<void>
 
+/**
+ * The batch wake-up, told how many messages are waiting. It is a turn of its
+ * own and carries no body: the model answers it with `agentmesh_fetch`, so a
+ * pile of letters costs one turn instead of one turn each.
+ */
+export type BatchNotifier = (count: number) => Promise<void>
+
+/** A message we hold a claim on and have already decided to deliver. */
+type ClaimedMessage = {
+  /** Path of the `.json.taken` file; the claim is ours until it is gone. */
+  path: string
+  message: MeshMessage
+  attempt: number
+}
+
 export type InboxCrashHooks = {
   afterClaim?: () => void | Promise<void>
   afterHandler?: () => void | Promise<void>
@@ -322,8 +341,24 @@ async function runCrashHook(hook: (() => void | Promise<void>) | undefined): Pro
 export class InboxWatcher {
   private watcher?: FSWatcher
   private timer?: NodeJS.Timeout
-  private draining = false
+  /**
+   * The delivery slot (M2 in the race matrix). While a delivery is running, a
+   * second one does not start: it only re-arms `pending` so the next loop picks
+   * up whatever arrived meanwhile. An external `session.idle` is not a
+   * substitute — it can land while this flag is set, and that is exactly how a
+   * message would get injected twice.
+   */
+  private deliveryInFlight = false
   private pending = false
+  /**
+   * M6, the one piece of state Phase 3.5 adds. Set when a batch notification
+   * was actually injected, it both suppresses a second notification while the
+   * batch is unresolved and anchors the fallback timer. Per watcher, never per
+   * process: one process hosts several sessions, and a shared marker would let
+   * one session's backlog silence another's notification. Deliberately not
+   * persisted — a restart just re-notifies, which is faster, not lossy.
+   */
+  private notifiedAt?: number
   private stopped = false
 
   private readonly config: MeshConfig
@@ -332,6 +367,7 @@ export class InboxWatcher {
   private readonly ownerInstance: string
   private readonly incarnation: string
   private readonly handler: InboxHandler
+  private readonly notifier: BatchNotifier
   private readonly onError: (error: unknown, event: string, fields?: LogFields) => void
   private readonly crashHooks: InboxCrashHooks
 
@@ -344,6 +380,13 @@ export class InboxWatcher {
     handler: InboxHandler,
     onError: (error: unknown, event: string, fields?: LogFields) => void,
     crashHooks: InboxCrashHooks = {},
+    notifier: BatchNotifier = async (count) => {
+      this.onError(
+        new Error("no batch notifier wired into this watcher"),
+        "batch_notify_unwired",
+        { count },
+      )
+    },
   ) {
     this.config = config
     this.id = id
@@ -353,6 +396,7 @@ export class InboxWatcher {
     this.handler = handler
     this.onError = onError
     this.crashHooks = crashHooks
+    this.notifier = notifier
   }
 
   get dir(): string {
@@ -413,6 +457,12 @@ export class InboxWatcher {
       if (!name.endsWith(CLAIM_SUFFIX)) continue
       const taken = path.join(this.dir, name)
       const base = name.slice(0, -CLAIM_SUFFIX.length)
+      const original = path.join(this.dir, base)
+      // A crash between creating the hard link and dropping the pending name
+      // leaves both names pointing at the same inode. The claim is the fact, so
+      // the pending name is the lie: drop it here, or every drain from now on
+      // would try to claim it, lose on EEXIST and find it again next poll.
+      if (await fileExists(original)) await removeFile(original)
       const messageId = base.replace(/\.json$/, "")
       if (isMessageId(messageId)) {
         const ack = await readAck(this.config, messageId, this.id)
@@ -430,7 +480,25 @@ export class InboxWatcher {
       const leaseExpiresAt = raw?._claim?.leaseExpiresAt
       const leaseMs = typeof leaseExpiresAt === "string" ? Date.parse(leaseExpiresAt) : Number.NaN
       if (Number.isFinite(leaseMs) && leaseMs > now) continue
-      const original = path.join(this.dir, base)
+      // A claim with no readable lease is not automatically stale: the window
+      // between creating the claim and stamping the lease is real, and a peer
+      // starting inside it would hand a message back while its owner is still
+      // injecting it. Fall back to the file's own age, which is the conservative
+      // reading of the same window.
+      if (!Number.isFinite(leaseMs)) {
+        // ctime, not mtime: creating the hard link updates ctime and leaves
+        // mtime alone, so mtime measures how long the message has been sitting
+        // in the inbox rather than how long ago it was claimed. Using it would
+        // hand back a message the instant its owner claimed it, just because the
+        // message itself had been queued for a while.
+        let age = Number.NaN
+        try {
+          age = ageMs((await fs.stat(taken)).ctimeMs, now)
+        } catch {
+          continue
+        }
+        if (age < this.config.leaseDurationMs) continue
+      }
       if (raw) {
         delete raw["_claim"]
         await writeJsonAtomic(original, raw)
@@ -441,30 +509,193 @@ export class InboxWatcher {
     }
   }
 
-  /** Process everything currently queued, oldest first (ULID file names sort). */
+  /**
+   * Process everything currently queued, oldest first (ULID file names sort).
+   *
+   * The batch decision is made on what we actually claimed, never on a readdir
+   * count: a count is a stale read, and acting on it would either notify for a
+   * batch that a concurrent fetch already took or inject a body for a batch it
+   * never announced. Claim first, then look at the claims.
+   *
+   * One claim means the fast path: the body is injected, exactly as before
+   * Phase 3.5, and `agentmesh_fetch` never sees it. Two or more means one
+   * notification instead of N body-injects, and the claims go straight back so
+   * the fetch can take them.
+   */
   async drain(): Promise<void> {
     if (this.stopped) return
-    if (this.draining) {
+    if (this.deliveryInFlight) {
       this.pending = true
       return
     }
-    this.draining = true
+    this.deliveryInFlight = true
     try {
       do {
         this.pending = false
-        for (const file of await listJsonFiles(this.dir)) {
-          if (this.stopped) return
-          await this.deliverOne(path.join(this.dir, file))
+        const files = await listJsonFiles(this.dir)
+        if (files.length === 0) {
+          // Nothing outstanding, so any earlier batch is resolved by definition.
+          this.notifiedAt = undefined
+          continue
         }
+        const claimed = await this.claimBatch(files)
+        if (claimed.length === 0) {
+          // Files are pending yet nothing could be claimed: a stale `.taken`
+          // from a crashed process is sitting next to them, and a claim on it
+          // loses forever. Recovery only runs at startup, so a watcher that was
+          // already live when that state appeared would never recover on its
+          // own. It is lease-respecting, so live claims are left untouched.
+          await this.recoverClaimed()
+          continue
+        }
+        if (claimed.length === 1) {
+          await this.deliverClaimed(claimed[0]!)
+          continue
+        }
+        await this.deliverBatch(claimed)
       } while (this.pending)
     } catch (error) {
       this.onError(error, "inbox_drain_failed")
     } finally {
-      this.draining = false
+      this.deliveryInFlight = false
+    }
+  }
+
+  /**
+   * Take as many messages as one batch may hold, oldest first, and hand back
+   * only the ones that survived claiming and validation. A file that lost the
+   * race, was already injected or is malformed is disposed of here, so the
+   * caller decides on a clean set of live claims.
+   */
+  private async claimBatch(files: string[]): Promise<ClaimedMessage[]> {
+    const claimed: ClaimedMessage[] = []
+    for (const name of files.slice(0, this.config.fetchLimit)) {
+      const held = await this.claimOne(path.join(this.dir, name))
+      if (held) claimed.push(held)
+    }
+    return claimed
+  }
+
+  /**
+   * One message, many waiting. Before announcing anything we check whether the
+   * batch we announced earlier went unread for longer than it is worth waiting:
+   * then the plain, old body-inject takes over and the message is delivered the
+   * way it always was.
+   *
+   * The check sits before the notification on purpose. The other order would
+   * announce a batch we are about to inject ourselves, and the model would read
+   * the wake-up as "come get this" while the turns are already arriving.
+   *
+   * Only what is claimed here is eligible: `claimBatch` took these files from
+   * `pending`, so anything a fetch already consumed or another delivery is
+   * holding right now is invisible to the fallback by construction, not by a
+   * check that could be skipped.
+   */
+  private async deliverBatch(claimed: ClaimedMessage[]): Promise<void> {
+    const count = claimed.length
+    const notifiedAt = this.notifiedAt
+    if (notifiedAt !== undefined) {
+      if (Date.now() - notifiedAt < this.config.fetchFallbackMs) {
+        // The batch is announced and still within its window. Say nothing else:
+        // a second wake-up would only repeat a batch the model has not read yet,
+        // and the fallback is the only thing that may resolve it.
+        for (const held of claimed) await this.release(held)
+        return
+      }
+      this.notifiedAt = undefined
+      this.onError(new Error("fetch window expired"), "batch_fallback", { count })
+      for (const held of claimed) await this.deliverClaimed(held)
+      return
+    }
+    // Release before announcing, not after. A fetch that lands in the window
+    // between the notice and the release would see fewer messages than the
+    // notice promised, and the batch would appear to lose one.
+    for (const held of claimed) await this.release(held)
+    try {
+      await this.notifier(count)
+      this.notifiedAt = Date.now()
+    } catch (error) {
+      if (error instanceof InboxCrashHookError) throw error
+      if (!(error instanceof SessionBusyError)) {
+        this.onError(error, "batch_notify_failed", { count })
+      }
+      this.notifiedAt = undefined
+    }
+  }
+
+  /**
+   * Pretend the notification was sent long enough ago that the fetch window has
+   * passed. Test-only seam for the fallback deadline: the alternative is
+   * sleeping through `fetchFallbackMs`, and nothing here depends on wall time.
+   */
+  expireNotification(now: number = Date.now()): void {
+    if (this.notifiedAt !== undefined) {
+      this.notifiedAt = now - this.config.fetchFallbackMs - 1
+    }
+  }
+
+  /**
+   * Take up to `limit` queued messages for the model, oldest first, and consume
+   * them: each one is claimed with the same atomic rename the injector uses, so
+   * a message can have exactly one winner — the fetch or the fallback, never
+   * both. The processed marker is written before the file is removed, which is
+   * what makes a crash in between a no-op instead of a redelivery.
+   *
+   * This is the only reader of the mailbox, and it is the reason the batch
+   * notification exists: one call answers for a whole pile of turns.
+   */
+  async takeBatch(limit: number): Promise<{ messages: MeshMessage[]; hasMore: boolean }> {
+    if (this.stopped) return { messages: [], hasMore: false }
+    const taken: ClaimedMessage[] = []
+    for (const name of (await listJsonFiles(this.dir)).slice(0, Math.max(1, limit))) {
+      const held = await this.claimOne(path.join(this.dir, name))
+      if (held) taken.push(held)
+    }
+    const messages: MeshMessage[] = []
+    for (const held of taken) {
+      await writeProcessedMarker(
+        this.config,
+        held.message.id,
+        replyDepthOf(held.message),
+        threadIdOf(held.message),
+        "fetch",
+      )
+      await removeFile(held.path)
+      messages.push(held.message)
+    }
+    const hasMore = (await listJsonFiles(this.dir)).length > 0
+    // M6, extended: a fetch is activity, so it moves the fallback deadline and
+    // keeps the notification suppressed while pagination is going on. A fetch
+    // that took the last of the pile resolves the batch outright, and a fetch
+    // that took nothing is not a signal at all.
+    if (messages.length > 0) this.notifiedAt = hasMore ? Date.now() : undefined
+    return { messages, hasMore }
+  }
+
+  /** Put a claim back on the queue, keeping the internal counters intact. */
+  private async release(held: ClaimedMessage): Promise<void> {
+    const message = withoutInternalFields(held.message)
+    if (held.attempt > 1) message["_retryCount"] = held.attempt - 1
+    const original = held.path.slice(0, -CLAIM_SUFFIX.length)
+    try {
+      await writeJsonAtomic(original, message)
+      await removeFile(held.path)
+    } catch (error) {
+      this.onError(error, "claim_release_failed", { attempt: held.attempt })
     }
   }
 
   private async deliverOne(file: string): Promise<void> {
+    const held = await this.claimOne(file)
+    if (held) await this.deliverClaimed(held)
+  }
+
+  /**
+   * Claim one message and get it ready to inject: the file is taken with an
+   * atomic rename, validated, and dropped early if it was already acked or
+   * already injected. Returns undefined when there is nothing left to deliver.
+   */
+  private async claimOne(file: string): Promise<ClaimedMessage | undefined> {
     const pending = await readJson<MeshMessage>(file)
     const attempt = retryCount(pending) + 1
     const claim: ClaimMeta = {
@@ -476,7 +707,7 @@ export class InboxWatcher {
       attempt,
     }
     const claimed = await claimFile(file, CLAIM_SUFFIX, claim)
-    if (!claimed) return // someone else got there first
+    if (!claimed) return undefined // someone else got there first
     await runCrashHook(this.crashHooks.afterClaim)
     const message = await readJson<MeshMessage>(claimed)
     const validation = validateMessage(message, claimed, this.id, this.config.maxTextLength)
@@ -512,12 +743,22 @@ export class InboxWatcher {
     if (await hasProcessedMarker(this.config, message.id)) {
       await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await removeFile(claimed)
-      return
+      return undefined
     }
+    return { path: claimed, message, attempt }
+  }
+
+  /**
+   * Deliver a message we hold a claim on: inject the body, stamp the marker,
+   * ack, then drop the file. Every failure path either drops the message on
+   * purpose or puts it back on the queue — none of them loses it.
+   */
+  private async deliverClaimed(held: ClaimedMessage): Promise<void> {
+    const { path: claimed, message, attempt } = held
     try {
       await this.handler(withoutInternalFields(message) as MeshMessage)
       await runCrashHook(this.crashHooks.afterHandler)
-      await writeProcessedMarker(this.config, message.id, replyDepthOf(message), threadIdOf(message))
+      await writeProcessedMarker(this.config, message.id, replyDepthOf(message), threadIdOf(message), "inject")
       await writeAcceptedAck(this.config, message.id, this.id, this.sessionID)
       await runCrashHook(this.crashHooks.afterAck)
       await removeFile(claimed)

@@ -73,6 +73,10 @@ export type MeshOptions = {
   maxInboxBytes?: number
   /** Maximum reply-chain depth. */
   maxReplyDepth?: number
+  /** How many messages one agentmesh_fetch call takes before reporting hasMore. */
+  fetchLimit?: number
+  /** How long a notified batch waits for agentmesh_fetch before body-injecting. */
+  fetchFallbackMs?: number
 }
 
 export type MeshConfig = {
@@ -108,6 +112,8 @@ export type MeshConfig = {
   maxMessageBytes: number
   maxInboxBytes: number
   maxReplyDepth: number
+  fetchLimit: number
+  fetchFallbackMs: number
 }
 
 const DEFAULTS = {
@@ -132,6 +138,8 @@ const DEFAULTS = {
   maxMessageBytes: 32_768,
   maxInboxBytes: 8_388_608,
   maxReplyDepth: 8,
+  fetchLimit: 20,
+  fetchFallbackMs: 30_000,
 } as const
 
 function defaultHome(): string {
@@ -285,6 +293,16 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.maxReplyDepth,
       DEFAULTS.maxReplyDepth,
     ) as number,
+    fetchLimit: pick(
+      envNumber("AGENTMESH_FETCH_LIMIT"),
+      options.fetchLimit,
+      DEFAULTS.fetchLimit,
+    ) as number,
+    fetchFallbackMs: pick(
+      envNumber("AGENTMESH_FETCH_FALLBACK_MS"),
+      options.fetchFallbackMs,
+      DEFAULTS.fetchFallbackMs,
+    ) as number,
   }
   if (!Number.isFinite(config.heartbeatIntervalMs) || config.heartbeatIntervalMs <= 0) {
     throw new Error("AgentMesh config: heartbeatIntervalMs must be a finite number greater than zero")
@@ -410,6 +428,18 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
     config.maxReplyDepth > 32
   ) {
     throw new Error("AgentMesh config: maxReplyDepth must be an integer from 1 to 32")
+  }
+  if (!Number.isInteger(config.fetchLimit) || config.fetchLimit < 1 || config.fetchLimit > 200) {
+    throw new Error("AgentMesh config: fetchLimit must be an integer from 1 to 200")
+  }
+  if (
+    !Number.isFinite(config.fetchFallbackMs) ||
+    config.fetchFallbackMs <= 0 ||
+    config.fetchFallbackMs > 600_000
+  ) {
+    throw new Error(
+      "AgentMesh config: fetchFallbackMs must be a finite number greater than zero and at most 600000ms",
+    )
   }
   return config
 }

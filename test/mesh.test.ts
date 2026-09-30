@@ -52,8 +52,26 @@ function leaseMessageWithId(id: string) {
   return { ...leaseMessage(), id }
 }
 
-function leaseClaim(leaseExpiresAt: string): ClaimMeta {
-  return {
+/**
+ * A watcher that is never started, so nothing drains behind the test's back.
+ * Its handler fails loudly: anything that reaches a body-inject here is a bug,
+ * because these cases are about what `takeBatch` claims, not about injection.
+ */
+function idleWatcher(config: ReturnType<typeof testConfig>, id: string, onBatch?: (count: number) => Promise<void>) {
+  return new InboxWatcher(
+    config,
+    id,
+    "ses_b",
+    "owner-a",
+    "incarnation-a",
+    async () => assert.fail("an unfetched message must not be injected"),
+    () => {},
+    {},
+    onBatch,
+  )
+}
+
+function leaseClaim(leaseExpiresAt: string): ClaimMeta {  return {
     ownerInstance: "owner-a",
     incarnation: "incarnation-a",
     sessionID: "ses_b",
@@ -897,14 +915,15 @@ describe("mesh", () => {
     assert.deepEqual(await a.mesh.deliveries({ sessionID: "ses_a" }), [])
   })
 
-  it("fetches inbox messages that were never injected", async () => {
-    const { config, a } = await twoAgents()
-    const aContext = sessionContext("ses_a", "/tmp/planner")
-    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+  it("takes inbox messages that were never injected", async () => {
+    const { config } = await twoAgents()
+    // Not a live mesh: two separate enqueues let the watcher deliver the first
+    // message as a lone batch before the second one lands.
+    const watcher = idleWatcher(config, "reviewer")
     const injected = newMessageId()
     const missed = newMessageId()
-    await enqueue(config, { ...leaseMessageWithId(injected), to: "planner", from: "reviewer" })
-    await enqueue(config, { ...leaseMessageWithId(missed), to: "planner", from: "reviewer" })
+    await enqueue(config, { ...leaseMessageWithId(injected), to: "reviewer", from: "planner" })
+    await enqueue(config, { ...leaseMessageWithId(missed), to: "reviewer", from: "planner" })
     await fs.mkdir(config.processedDir, { recursive: true })
     await writeJsonAtomic(path.join(config.processedDir, `${injected}.json`), {
       id: injected,
@@ -912,22 +931,217 @@ describe("mesh", () => {
       depth: 0,
     })
 
-    const fetched = await a.mesh.fetch({ sessionID: "ses_a" })
-    assert.deepEqual(fetched.map((message) => message.id), [missed])
+    const fetched = await watcher.takeBatch(10)
+    // The already-injected one is acked and dropped, not handed over twice.
+    assert.deepEqual(fetched.messages.map((message) => message.id), [missed])
+    const ack = await readAck(config, injected, "reviewer")
+    assert.equal(ack?.status, "accepted")
   })
 
-  it("returns the newest messages within the limit, oldest first", async () => {
-    const { a } = await twoAgents()
-    const aContext = sessionContext("ses_a", "/tmp/planner")
-    await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
+  it("announces a batch once and leaves the messages pending for the fetch", async () => {
+    const { config } = await twoAgents()
+    const notified: number[] = []
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (message) => void injected.push(message.id),
+      () => {},
+      {},
+      async (count) => void notified.push(count),
+    )
+    const ids = [newMessageId(), newMessageId(), newMessageId()]
+    for (const id of ids) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+    }
+
+    await watcher.drain()
+    // One wake-up, no bodies: three turns would have been the old behaviour.
+    assert.deepEqual(notified, [3])
+    assert.deepEqual(injected, [])
+    assert.deepEqual(
+      (await messageFiles(path.join(config.inboxDir, "reviewer"))).sort(),
+      ids.map((id) => `${id}.json`).sort(),
+    )
+
+    // Draining again must not re-announce: the batch is unresolved.
+    await watcher.drain()
+    assert.deepEqual(notified, [3])
+
+    const taken = await watcher.takeBatch(10)
+    assert.deepEqual(taken.messages.map((message) => message.id), ids)
+    assert.equal(taken.hasMore, false)
+    assert.deepEqual(injected, [])
+  })
+
+  it("injects bodies once the fetch window expires, and only what is pending", async () => {
+    const { config } = await twoAgents({ fetchFallbackMs: 60_000 })
+    const notified: number[] = []
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (message) => void injected.push(message.id),
+      () => {},
+      {},
+      async (count) => void notified.push(count),
+    )
+    const ids = [newMessageId(), newMessageId(), newMessageId()]
+    for (const id of ids) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+    }
+    await watcher.drain()
+    assert.deepEqual(notified, [3])
+
+    // The model read one and walked away: that read moved the deadline, so the
+    // fallback is not due yet and must not take the two that remain.
+    await watcher.takeBatch(1)
+    await watcher.drain()
+    assert.deepEqual(injected, [])
+
+    // Push the deadline into the past rather than sleeping through it.
+    watcher.expireNotification()
+    await watcher.drain()
+    assert.deepEqual(injected, ids.slice(1))
+    assert.deepEqual(await messageFiles(path.join(config.inboxDir, "reviewer")), [])
+
+    // Resolved: nothing left, so no further notification and nothing to inject.
+    await watcher.drain()
+    assert.deepEqual(notified, [3])
+    assert.deepEqual(injected, ids.slice(1))
+  })
+
+  it("gives a contested message to exactly one winner", async () => {
+    const { config } = await twoAgents({ fetchFallbackMs: 60_000 })
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (message) => void injected.push(message.id),
+      () => {},
+      {},
+      async () => {},
+    )
+    const ids = [newMessageId(), newMessageId(), newMessageId()]
+    for (const id of ids) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+    }
+    await watcher.drain()
+    await waitFor(async () =>
+      (await messageFiles(path.join(config.inboxDir, "reviewer"))).length === ids.length,
+    )
+
+    // Both consumers race for the same files. The claim decides, so no message
+    // may reach the model twice. It is *not* asserted that every message lands
+    // in this instant: a fetch that took something resolves the batch, which
+    // hands the rest back to the queue for the fallback. That is by design, and
+    // the fallback cases above cover delivery.
+    const [taken, after] = await Promise.all([
+      watcher.takeBatch(10),
+      watcher.drain().then(() => injected.length),
+    ])
+    const fetched = taken.messages.map((message) => message.id)
+    const delivered = [...injected]
+    assert.equal(fetched.filter((id) => delivered.includes(id)).length, 0)
+    assert.equal(new Set([...fetched, ...delivered]).size, fetched.length + delivered.length)
+    assert.equal(await readJson(path.join(config.processedDir, `${fetched[0] ?? ids[0]}.json`)).then(
+      (marker) => (marker as { via?: string } | undefined)?.via,
+    ), fetched.length ? "fetch" : "inject")
+  })
+
+  it("injects a single message straight to the session, bypassing fetch", async () => {
+    const { config } = await twoAgents()
+    const notified: number[] = []
+    const injected: string[] = []
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (message) => void injected.push(message.id),
+      () => {},
+      {},
+      async (count) => void notified.push(count),
+    )
+    const id = newMessageId()
+    await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+
+    await watcher.drain()
+    assert.deepEqual(injected, [id])
+    assert.deepEqual(notified, [])
+    assert.deepEqual(await watcher.takeBatch(10), { messages: [], hasMore: false })
+    const marker = await readJson<Record<string, unknown>>(
+      path.join(config.processedDir, `${id}.json`),
+    )
+    assert.equal(marker?.["via"], "inject")
+  })
+
+  it("consumes what it takes: marker with via fetch, and gone from the inbox", async () => {
+    const { config } = await twoAgents()
+    const watcher = idleWatcher(config, "reviewer")
+    const id = newMessageId()
+    const threadId = newMessageId()
+    await enqueue(config, {
+      ...leaseMessageWithId(id),
+      to: "reviewer",
+      from: "planner",
+      replyDepth: 2,
+      threadId,
+    })
+
+    const first = await watcher.takeBatch(10)
+    assert.deepEqual(first.messages.map((message) => message.id), [id])
+    const marker = await readJson<Record<string, unknown>>(
+      path.join(config.processedDir, `${id}.json`),
+    )
+    assert.equal(marker?.["via"], "fetch")
+    assert.equal(marker?.["depth"], 2)
+    assert.equal(marker?.["threadId"], threadId)
+    assert.deepEqual(await messageFiles(path.join(config.inboxDir, "reviewer")), [])
+
+    // A second fetch must not hand the same message back.
+    assert.deepEqual(await watcher.takeBatch(10), { messages: [], hasMore: false })
+  })
+
+  it("reports hasMore and stops at the limit", async () => {
+    const { config } = await twoAgents({ fetchLimit: 2 })
+    const watcher = idleWatcher(config, "reviewer")
+    const ids = [newMessageId(), newMessageId(), newMessageId()]
+    for (const id of ids) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+    }
+
+    // Oldest first: a queue that answered newest-first would reorder the mail.
+    const first = await watcher.takeBatch(config.fetchLimit)
+    assert.deepEqual(first.messages.map((message) => message.id), ids.slice(0, 2))
+    assert.equal(first.hasMore, true)
+
+    const rest = await watcher.takeBatch(config.fetchLimit)
+    assert.deepEqual(rest.messages.map((message) => message.id), ids.slice(2))
+    assert.equal(rest.hasMore, false)
+  })
+
+  it("takes only what the limit allows, oldest first", async () => {
+    const { config } = await twoAgents()
+    const watcher = idleWatcher(config, "reviewer")
     const first = newMessageId()
     const second = newMessageId()
-    await enqueue(a.mesh.config, { ...leaseMessageWithId(first), to: "planner", from: "reviewer" })
-    await enqueue(a.mesh.config, { ...leaseMessageWithId(second), to: "planner", from: "reviewer" })
+    await enqueue(config, { ...leaseMessageWithId(first), to: "reviewer", from: "planner" })
+    await enqueue(config, { ...leaseMessageWithId(second), to: "reviewer", from: "planner" })
 
-    // Fetch is a read: it never deletes, so the watcher still owns delivery.
-    const fetched = await a.mesh.fetch({ sessionID: "ses_a", limit: 1 })
-    assert.deepEqual(fetched.map((message) => message.id), [second])
+    const taken = await watcher.takeBatch(1)
+    assert.deepEqual(taken.messages.map((message) => message.id), [first])
+    assert.equal(taken.hasMore, true)
   })
 
   it("tells an unregistered session to register before fetching", async () => {
@@ -1455,6 +1669,98 @@ describe("mesh", () => {
     )
     assert.ok((queued?.["_busyDeferCount"] as number) >= 2)
     assert.deepEqual(await messageFiles(inbox), [`${message.id}.json`])
+  })
+
+  it("accumulates a busy sender's messages and hands them over as a batch", async () => {
+    const home = await tempHome()
+    const config = testConfig(home, { pollIntervalMs: 10, busyDeferMs: 1, fetchFallbackMs: 60_000 })
+    cleanups.push(() => fs.rm(home, { recursive: true, force: true }))
+    const messages = [newMessageId(), newMessageId(), newMessageId()].map((id) =>
+      leaseMessageWithId(id),
+    )
+    const inbox = path.join(config.inboxDir, "reviewer")
+    await fs.mkdir(inbox, { recursive: true })
+    for (const message of messages) {
+      await writeJsonAtomic(path.join(inbox, `${message.id}.json`), message)
+    }
+    const injected: string[] = []
+    const notified: number[] = []
+    let attempts = 0
+    let busy = true
+    const watcher = new InboxWatcher(
+      config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (received) => {
+        if (busy) throw new SessionBusyError("ses_b")
+        injected.push(received.id)
+      },
+      () => {},
+      {},
+      async (count) => {
+        // The real notifier injects a turn, so it fails exactly like the body
+        // path does while the session is busy.
+        attempts += 1
+        if (busy) throw new SessionBusyError("ses_b")
+        void notified.push(count)
+      },
+    )
+    cleanups.push(() => watcher.stop())
+    const starting = watcher.start()
+    // While the session is busy the pile only grows: no body, no notice, and
+    // nothing left claimed — every attempt gives the claims straight back.
+    await waitFor(() => attempts >= 2)
+    assert.deepEqual(notified, [])
+    assert.deepEqual(injected, [])
+
+    busy = false
+    // Once it frees up, one notice covers the whole pile and fetch takes it.
+    await waitFor(() => notified.length === 1)
+    assert.equal(notified[0], 3)
+    assert.deepEqual(injected, [])
+
+// Which route each message takes is not fixed: the pile is announced as a batch,
+//    and whatever is still alone when a later drain finds it is injected as a
+    // body. Both are correct. What must hold is that every message arrives once
+    // and only once, whichever route carried it.
+    const collected: string[] = []
+    await waitFor(async () => {
+      const taken = await watcher.takeBatch(10)
+      collected.push(...taken.messages.map((message) => message.id))
+      return collected.length + injected.length === messages.length
+    })
+    const delivered = [...collected, ...injected]
+    assert.deepEqual(new Set(delivered), new Set(messages.map((message) => message.id)))
+    assert.equal(delivered.length, messages.length)
+    await starting
+  })
+
+  it("keeps one sender's messages in order and never promises an order between senders", async () => {
+    const { config } = await twoAgents({ fetchLimit: 10 })
+    const watcher = idleWatcher(config, "reviewer")
+    const fromPlanner = [newMessageId(), newMessageId(), newMessageId()]
+    const fromAuditor = [newMessageId(), newMessageId()]
+    for (const id of fromPlanner) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "planner" })
+    }
+    for (const id of fromAuditor) {
+      await enqueue(config, { ...leaseMessageWithId(id), to: "reviewer", from: "auditor" })
+    }
+
+    const taken = await watcher.takeBatch(10)
+    const order = taken.messages.map((message) => message.id)
+    // Within one sender the ULIDs are monotonic and the queue is drained in name
+    // order, so the sequence is guaranteed. Between senders it is not: ULIDs from
+    // different processes are not comparable, so we assert nothing about that
+    // beyond every message arriving exactly once.
+    for (const ids of [fromPlanner, fromAuditor]) {
+      const positions = ids.map((id) => order.indexOf(id))
+      assert.equal(positions.every((position) => position >= 0), true)
+      assert.deepEqual(positions, [...positions].sort((a, b) => a - b))
+    }
+    assert.equal(new Set(order).size, fromPlanner.length + fromAuditor.length)
   })
 
   it("delivers a queued message once the busy session goes idle", async () => {

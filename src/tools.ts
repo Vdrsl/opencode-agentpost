@@ -24,7 +24,8 @@ const PEERS_DESCRIPTION = `List the agents on the mesh with live state: id, desc
 Use it to (1) get a valid "to" before ${TOOL_SEND}, (2) check whether a peer is still alive before or after sending, and (3) read peer metadata — project path, stack, role — to decide who a piece of work belongs to.
 A stale peer is not gone: messages queue and are accepted when it returns.
 idleMs is ms since that peer's last session turn: prefer the smallest value that fits the task, and treat an hours-old one as an unattended chat. Peers are returned freshest first.
-sessionID is the opencode chat behind the record: several ids in one directory are several chats, and a closed chat stays alive until its record is reaped but never answers. If a peer accepts a message and stays silent, move on to another peer instead of resending.`
+sessionID is the opencode chat behind the record: several ids in one directory are several chats, and a closed chat stays alive until its record is reaped but never answers. If a peer accepts a message and stays silent, move on to another peer instead of resending.
+A peer nobody introduced — description exactly "opencode agent working in <directory>" and empty metadata — is a background process that registered itself, not a colleague. Do not delegate to it; choose a peer that described itself.`
 
 const SEND_DESCRIPTION = `Send one message to another registered agent. It is injected into that agent's opencode session as a new user turn.
 This returns a delivery status, NOT the peer's answer: "accepted" (OpenCode returned 204 and accepted the message into the peer's session), "queued" (waiting for them to come back), "failed" (it could not be injected), "ambiguous" (the delivery outcome is unknown). Accepted does not mean the peer read the message or that the model answered.
@@ -37,9 +38,10 @@ const DELIVERIES_DESCRIPTION = `Check what became of the messages you sent: id, 
 States: "queued" (in the recipient's inbox, no confirmation yet), "accepted" (it became a user turn in their session), "failed" (they got it but could not inject it), "ambiguous" (outcome unknown), "undeliverable" (nobody confirmed before it aged out).
 Use it when a peer went quiet and you need to know whether the message landed, before resending anything. Do not poll it in a loop.`
 
-const FETCH_DESCRIPTION = `Fallback only: read the messages sitting in your own inbox that were never injected (for example after a session crash, or while a busy session still holds them).
-Mail normally arrives as a new user turn on its own — this tool is not the way to read mail, and polling it does not make anything arrive faster. Messages already injected are excluded, so nothing shows up twice.
-Returns an empty list when there is nothing missed.`
+const FETCH_DESCRIPTION = `Read the messages waiting in your inbox and take them out of it. Call this when you get a notice saying "N new messages in your inbox" — that notice is a wake-up, not the mail itself.
+A single message never arrives as a notice; it arrives as a full turn, so there is nothing to fetch in that case.
+Returns the oldest messages first, and "hasMore": true when more are still queued — call again if so.
+This is not a polling tool: the transport tells you when there is mail, and polling does not make anything arrive sooner. Taking a message out of the inbox means you own it; if you fetch and then do not act on what you read, it is not delivered again. Returns an empty list when there is nothing waiting.`
 
 export function buildTools(
   mesh: Mesh,
@@ -206,7 +208,7 @@ export function buildTools(
           .int()
           .min(1)
           .optional()
-          .describe("How many messages to return, oldest first. Default 10, max 50."),
+          .describe("How many messages to take, oldest first. Default and ceiling: fetchLimit."),
       },
       async execute(args, ctx) {
         if (!mesh.selfId(ctx.sessionID)) {
@@ -216,14 +218,15 @@ export function buildTools(
             metadata: { count: 0 },
           }
         }
-        const messages = await mesh.fetch({
+        const { messages, hasMore } = await mesh.fetch({
           sessionID: ctx.sessionID,
-          limit: Math.min(args.limit ?? 10, 50),
+          ...(args.limit ? { limit: Math.min(args.limit, mesh.fetchLimit) } : {}),
         })
         return {
-          title: `${messages.length} unprocessed message${messages.length === 1 ? "" : "s"}`,
-          output: JSON.stringify({ messages }, null, 2),
-          metadata: { count: messages.length },
+          title: `${messages.length} message${messages.length === 1 ? "" : "s"}` +
+            (hasMore ? ", more pending" : ""),
+          output: JSON.stringify({ messages, hasMore }, null, 2),
+          metadata: { count: messages.length, hasMore },
         }
       },
     }),

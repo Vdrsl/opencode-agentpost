@@ -106,6 +106,136 @@ describe("crash matrix", () => {
     }
   })
 
+  it("C7 consolidates both names after a crash between link and drop", async () => {
+    const f = await fixture()
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    let injected = 0
+    const first = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+      { afterClaim: () => { throw new Error("crash C7") } },
+    )
+    try {
+      await first.start()
+      await first.stop()
+      assert.equal(await exists(f.claimed(msg.id)), true)
+      // The hard link is in place; the crash happened before the pending name
+      // went away, so both names point at the same inode.
+      await fs.link(f.claimed(msg.id), f.pending(msg.id))
+      assert.equal(await exists(f.pending(msg.id)), true)
+      assert.equal(await exists(f.claimed(msg.id)), true)
+
+      const second = new InboxWatcher(
+        f.config,
+        "reviewer",
+        "ses_b",
+        "owner-a",
+        "incarnation-a",
+        async () => { injected++ },
+        () => {},
+      )
+      await second.start()
+      await second.stop()
+      // Recovery dropped the pending name rather than leaving a file that every
+      // future drain would lose a claim race against.
+      assert.equal(await exists(f.pending(msg.id)), false)
+      assert.equal(await exists(f.claimed(msg.id)), false)
+      assert.equal(injected, 1)
+      assert.equal(await exists(f.processed(msg.id)), true)
+    } finally {
+      await stopAndRemove(f.home, first)
+    }
+  })
+
+  it("C8 recovers a stale claim while a live watcher is running", async () => {
+    const f = await fixture({ leaseDurationMs: 30_000 })
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+    const injected: string[] = []
+    // The state a crashed process leaves behind: the claim exists and its lease
+    // has long expired. It is the same `.taken` the hard link would leave.
+    await writeJsonAtomic(f.claimed(msg.id), {
+      ...msg,
+      _claim: { ...claim(), leaseExpiresAt: new Date(0).toISOString() },
+    })
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async (received) => void injected.push(received.id),
+      () => {},
+    )
+    try {
+      // Started with the stale claim already in place: recovery at start clears
+      // it. The regression this covers is the watcher that was *already* running.
+      await watcher.start()
+      await waitFor(() => injected.length === 1)
+      assert.equal(await exists(f.pending(msg.id)), false)
+      assert.equal(await exists(f.claimed(msg.id)), false)
+      assert.equal(await exists(f.processed(msg.id)), true)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+
+  it("C9 hands a live claim back only after its lease looks stale", async () => {
+    const f = await fixture({ leaseDurationMs: 100 })
+    const msg = message()
+    await writeJsonAtomic(f.pending(msg.id), msg)
+// No `_claim` at all: the window between creating the claim and stamping its
+    // lease. The content is deliberately much older than the lease, so only the
+    // claim's own ctime can keep it alive — mtime here is just the queueing time.
+    await writeJsonAtomic(f.claimed(msg.id), msg)
+    const queued = new Date(Date.now() - 60_000)
+    await fs.utimes(f.claimed(msg.id), queued, queued)
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_b",
+      "owner-a",
+      "incarnation-a",
+      async () => {},
+      () => {},
+    )
+    try {
+await watcher.start()
+      await watcher.stop()
+      // Untouched: the claim is young, even though the message is old.
+      assert.equal(await exists(f.claimed(msg.id)), true)
+      assert.equal(await exists(f.pending(msg.id)), false)
+
+      // Age it past the lease and it is recovered, because now nothing can hold it.
+      const second = new InboxWatcher(
+        f.config,
+        "reviewer",
+        "ses_b",
+        "owner-a",
+        "incarnation-a",
+        async () => {},
+        () => {},
+      )
+      await new Promise((resolve) => setTimeout(resolve, f.config.leaseDurationMs + 50))
+      await second.start()
+      await second.stop()
+      // Recovery handed it back and the watcher delivered it, so both names are
+      // gone and the processed marker proves it went out exactly once.
+      assert.equal(await exists(f.claimed(msg.id)), false)
+      assert.equal(await exists(f.pending(msg.id)), false)
+      assert.equal(await exists(f.processed(msg.id)), true)
+      await stopAndRemove(f.home, second)
+    } finally {
+      await stopAndRemove(f.home, watcher)
+    }
+  })
+
   it("C2 retries an expired claim after a crash immediately after claim", async () => {
     const f = await fixture()
     const msg = message()

@@ -46,7 +46,7 @@ There is **no daemon, no port, no lock**. All coordination happens through one h
 <home>/dead/<id>/<msgid>.json  undeliverable messages, written by the recipient
 <home>/quarantine/<id>/        malformed messages, written by the recipient
 <home>/acks/<msgid>.json       delivery ack, written by the recipient
-<home>/processed/<msgid>.json local recipient marker after successful injection
+<home>/processed/<msgid>.json local recipient marker after successful injection or fetch
 <home>/outbox/<msgid>.json      the sender's own copy: state of one sent message
 ```
 
@@ -60,8 +60,13 @@ Correctness rests on facts that are easy to break accidentally:
   which is why messages cross opencode servers, auth and restarts. See `src/inbox.ts`.
 - **All writes are atomic** (temp file + `rename`, `src/store.ts`). Reads treat missing/corrupt
   files as normal and return `undefined` — peers come and go; discovery must never throw.
-- **Claiming is `rename` to `*.json.taken`** (at-most-once injection). Orphaned claims from a
-  crashed process are restored on watcher start (`InboxWatcher.recoverClaimed`).
+- **Claiming is `fs.link` to `*.json.taken`, then dropping the pending name** (at-most-once
+  injection). It must stay `fs.link` and never go back to `rename`: on Windows two concurrent renames
+  of one source both succeed, measured, so two delivery paths could each believe they owned the same
+  message. A hard link is exclusive by definition, `EEXIST` is the normal losing outcome, and a crash
+  between link and drop leaves two names on one inode — same file, not two copies, which
+  `recoverClaimed` consolidates. Orphaned claims from a crashed process are restored on watcher start
+  (`InboxWatcher.recoverClaimed`).
 - **Local processed markers suppress replay after a successful injection.** They are recipient-owned
   state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
@@ -93,10 +98,25 @@ Correctness rests on facts that are easy to break accidentally:
   claims a message, injects it, stamps `processed/<msgid>.json` and only then deletes the inbox
   copy. `agentmesh_fetch` is the read-only escape hatch for the message that never got that far
   (a crashed session, or one still held by a busy session) and it **excludes anything with a
-  processed marker**, so a model can never be shown a turn it already saw. It must never delete
-  what it reads: the watcher is still the only owner of that decision. `agentmesh_deliveries`
+  processed marker**, so a model can never be shown a turn it already saw. `agentmesh_deliveries`
   reads `outbox/` filtered by the entry's `from` — that field is the only reason a shared outbox
   directory can stay owner-private, so write it on every entry.
+- **One winner per `msgid`, and the batch decision is made on claims, never on a readdir count.** A
+  count is a stale read, so `drain` claims up to `fetchLimit` files first and then looks at what it
+  holds. The claim primitive is what makes this hold across `fetch` and the fallback racing for the
+  same files; a lost claim is `EEXIST`, never an error.
+- **Adaptive delivery: idle + 1 pending → inject the body; ≥2 → one notification, no bodies.** The
+  notification is a wake-up, not a message: no `msgid`, no `processed` marker, no ack. `notifiedAt`
+  (M6) is per-watcher in-memory state doing two jobs — suppressing a repeat notification while the
+  batch is unresolved, and anchoring the `fetchFallbackMs` fallback deadline. It is deliberately not
+  persisted: a restart re-notifies, which is faster, never lossy. Anything still `pending` when the
+  deadline passes is body-injected, which is the old reliable path.
+- **A message consumed by `fetch` is consumed for good.** The marker is written before the file is
+  removed, so a crash in between is a no-op rather than a redelivery. The cost is honest: unlike an
+  inject, whose text lands in the session history as a user turn, a fetch result lives inside a
+  turn that can be aborted — so a message taken by `fetch` and not acted on before an abort is not
+  recovered. That is the one place fetch delivery is weaker than injection, and it is a deliberate
+  trade, not an oversight.
 - **Activity is a separate `utimes` file, `<home>/activity/<id>`.** It is touched on every
   `chat.message` and `session.idle`, never a rewrite of `agents/<id>.json` — a rewrite would
   open a rename window where a peer's `list()` sees ENOENT and the peer vanishes. Peers read it

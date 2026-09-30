@@ -11,7 +11,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 
-import { assertValidId, type MeshConfig, slugify } from "./config.ts"
+import { assertValidId, type MeshConfig, slugify, TOOL_FETCH } from "./config.ts"
 import type { Logger } from "./logger.ts"
 import { renderEnvelope } from "./envelope.ts"
 import {
@@ -49,9 +49,16 @@ export type MeshDeps = {
   logger: Logger
 }
 
+/**
+ * What one `agentmesh_fetch` call consumed. `hasMore` is honest but
+ * best-effort: it reports whether messages were still pending when we looked,
+ * and the transport is the real guarantee — anything left is either announced
+ * again or body-injected by the fallback, never lost.
+ */
+export type FetchResult = { messages: MeshMessage[]; hasMore: boolean }
+
 /** Identity of the session a tool call came from. */
-export type SessionContext = {
-  sessionID: string
+export type SessionContext = {  sessionID: string
   directory: string
   worktree: string
   serverUrl: string
@@ -184,6 +191,8 @@ export class Mesh {
         record.incarnation ?? "",
         (message) => this.receive(routing, message),
         (_error, event, fields) => this.deps.logger("error", event, fields),
+        {},
+        (count) => this.notify(routing, count),
       )
       this.agents.set(routing.sessionID, {
         id: record.id,
@@ -458,6 +467,25 @@ export class Mesh {
     this.deps.logger("info", "message_accepted")
   }
 
+  /**
+   * The batch wake-up: a turn that carries no message body, only the count and
+   * who wrote. It is not a message and gets no `msgid`, no processed marker and
+   * no ack — it exists to make the model call `agentmesh_fetch` once for the
+   * whole batch instead of paying one full turn per letter.
+   */
+  private async notify(routing: AgentRouting, count: number): Promise<void> {
+    await this.deps.inject({
+      sessionID: routing.sessionID,
+      directory: routing.directory,
+      text:
+        `[agentmesh] ${count} new message${count === 1 ? "" : "s"} in your inbox. ` +
+        `Call ${TOOL_FETCH} to read them, then continue with your work. ` +
+        `Nothing is lost if you do not: they stay queued and arrive as turns ` +
+        `on their own.`,
+    })
+    this.deps.logger("info", "batch_notified", { count })
+  }
+
   /** What became of the messages this session sent, newest first. */
   async deliveries(input: {
     sessionID: string
@@ -479,26 +507,25 @@ export class Mesh {
   }
 
   /**
-   * The messages in our own inbox that were never injected, oldest first.
-   *
-   * Injection is the primary path and the watcher deletes each message as it
-   * delivers it, so this is nearly always empty: it exists for the message that
-   * arrived while the session was crashing, or for one still waiting behind a
-   * busy session. Anything with a processed marker is excluded, because the
-   * model already saw it as a turn and must not see it twice.
+   * What one `agentmesh_fetch` call takes, in one turn. `hasMore` is honest but
+   * best-effort: it reports what was still pending when we looked, and the
+   * transport is the real guarantee.
    */
-  async fetch(input: { sessionID: string; limit?: number }): Promise<MeshMessage[]> {
-    const id = this.agents.get(input.sessionID)?.id
-    if (!id) return []
-    const dir = inboxDirFor(this.config, id)
-    const messages: MeshMessage[] = []
-    for (const name of (await listJsonFiles(dir)).slice(-(input.limit ?? 10)).reverse()) {
-      const message = await readJson<MeshMessage>(path.join(dir, name)).catch(() => undefined)
-      if (!message || !isMessageId(message.id)) continue
-      if (message.from === id) continue
-      if (await hasProcessedMarker(this.config, message.id)) continue
-      messages.push(message)
-    }
-    return messages.reverse()
+  get fetchLimit(): number {
+    return this.config.fetchLimit
+  }
+
+  /**
+   * Take the messages waiting in our own inbox, oldest first.
+   *
+   * This is the answer to a batch notification: it claims each message with the
+   * same atomic rename the injector uses, so a message reaches the model exactly
+   * once whether it comes here or through a body-inject. Anything the watcher is
+   * holding as a claim right now is not here — the fallback picks it up.
+   */
+  async fetch(input: { sessionID: string; limit?: number }): Promise<FetchResult> {
+    const agent = this.agents.get(input.sessionID)
+    if (!agent) return { messages: [], hasMore: false }
+    return agent.watcher.takeBatch(input.limit ?? this.config.fetchLimit)
   }
 }

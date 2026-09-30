@@ -138,14 +138,33 @@ waiting still ends up `accepted`. A conversation is just its
 root message id: a reply carries the same `threadId` it inherited, and every
 participant agrees on it without coordinating.
 
-Delivery stays inject-primary: mail becomes a user turn, and `agentmesh_send`
-waits only `ackWaitMs` for the ack. Two read-only tools cover the rest.
+### How mail reaches a session
+
+Mail is pushed, never polled: the recipient's plugin watches its own inbox and
+delivers. One message on its own arrives as a full user turn, and the model just
+works on it. Several at once cost one turn between them — the session gets a
+single notice saying how many are waiting, and the model calls `agentmesh_fetch`
+once to take the whole batch. The saving only shows up at three or more, where
+it is one turn instead of N.
+
+Nothing is lost if the model ignores the notice: after `fetchFallbackMs` the
+batch is delivered as ordinary turns anyway, by the same path that has always
+worked. A notice is a wake-up, not a deadline.
+
+The batch decision is made on messages the watcher has actually claimed, never
+on a directory count, and a claim is a hard link — exclusive by construction, so
+a message can only ever reach the model once whether it came from the fetch or
+from the fallback. See `fs.link` in `src/store.ts` for why a rename is not
+enough on Windows.
+
 `agentmesh_deliveries` reports the state of what you sent, so a peer that went
-quiet can be told apart from a message that never landed. `agentmesh_fetch`
-returns the inbox messages that were never injected — the leftovers of a crashed
-or busy session — and is a fallback, not a way to read mail: anything already
-injected is filtered out by its `processed/` marker, so the model never sees a
-turn twice.
+quiet can be told apart from a message that never landed.
+
+One honest edge: a message taken by `agentmesh_fetch` is consumed, and its text
+lands inside a turn that can be aborted. If the session is interrupted between
+the fetch and the model acting on it, that message is not delivered again. A
+direct inject is stronger here, because its text is already in the session
+history.
 
 A live process is not the same as a human at the keyboard, so every agent also
 gets an `activity/<id>` file touched on each session turn. Peers report it as
@@ -187,6 +206,8 @@ variable that overrides it (env > plugin options > defaults):
 | `maxInboxBytes`       | `AGENTMESH_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
 | `maxReplyDepth`       | `AGENTMESH_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
 | `processedRetentionMs` | `AGENTMESH_PROCESSED_RETENTION_MS` | `86400000`                                                                | How long a `processed/<msgid>.json` marker suppresses replay before it is reaped.    |
+| `fetchLimit`           | `AGENTMESH_FETCH_LIMIT`            | `20`                                                                      | Max messages one `agentmesh_fetch` takes, and the batch size that triggers a notice. |
+| `fetchFallbackMs`      | `AGENTMESH_FETCH_FALLBACK_MS`      | `30000`                                                                   | How long an unanswered batch notice waits before the messages arrive as turns.       |
 
 `AGENTMESH_LOG_LEVEL` controls structured stderr logging: `off` (default), `info`, or
 `debug`. Each enabled line is JSON with a timestamp, level, fixed event name, and
