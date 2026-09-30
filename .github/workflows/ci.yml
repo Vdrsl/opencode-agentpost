@@ -9,6 +9,10 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # Every leg reports. The suite exists to tell platforms apart, and the
+      # default fail-fast cancels the rest of the matrix on the first failure —
+      # which hides exactly the question this matrix is here to answer.
+      fail-fast: false
       matrix:
         # engines says >=22; tests run TypeScript directly via type stripping,
         # so both the floor and the current LTS have to work. macOS is here

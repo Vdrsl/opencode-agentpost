@@ -141,6 +141,10 @@ describe("crash matrix", () => {
         () => {},
       )
       await second.start()
+      // The claim never got a lease stamped, so recovery deliberately leaves it
+      // alone until the fallback window passes — the owner may still be
+      // injecting. Delivery therefore waits for a poll, not for start().
+      await waitFor(() => injected === 1)
       await second.stop()
       // Recovery dropped the pending name rather than leaving a file that every
       // future drain would lose a claim race against.

@@ -354,7 +354,7 @@ describe("mesh", () => {
     )
     cleanups.push(() => watcher.stop())
     await watcher.start()
-    assert.equal(attempts, 2)
+    await waitFor(() => attempts === 2)
     assert.deepEqual(await messageFiles(inbox), [])
     const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
     assert.equal(ack?.["status"], "accepted")
@@ -1603,8 +1603,12 @@ describe("mesh", () => {
     assert.equal(deferred?.["_retryCount"], undefined)
     release()
     await starting
-    const ack = await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`))
-    assert.equal(ack?.["status"], "accepted")
+    // The retry ran on a poll tick, not inside start()'s own drain, so the ack
+    // is written after start() has already resolved.
+    await waitFor(async () =>
+      (await readJson<Record<string, unknown>>(path.join(config.acksDir, `${message.id}.json`)))
+        ?.["status"] === "accepted",
+    )
   })
 
   it("dead-letters a session that no longer exists", async () => {
