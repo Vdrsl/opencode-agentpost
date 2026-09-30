@@ -301,8 +301,16 @@ export class Mesh {
       description:
         reuse?.description ??
         carried?.description ??
+        // The project's own role, when it declares one. This is a default, not an
+        // override: an agent that called `agentmesh_register` is registered
+        // already and never reaches this path, so config and agent never contend.
+        this.config.description ??
         `opencode agent working in ${context.directory}`,
-      metadata: reuse?.metadata ?? carried?.metadata ?? {},
+      metadata:
+        reuse?.metadata ??
+        carried?.metadata ??
+        this.config.metadata ??
+        {},
       force: true,
     })
     this.deps.logger("info", "auto_registered")

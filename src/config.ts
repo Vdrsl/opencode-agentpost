@@ -36,6 +36,15 @@ export type MeshOptions = {
   home?: string
   /** Register automatically on the first user message. Default: true. */
   autoRegister?: boolean
+  /**
+   * Default description for auto-registration, so the role is a property of the
+   * project rather than something every session invents. An explicit
+   * `agentmesh_register` still wins: this only fills in the case where the
+   * agent says nothing, so there is no conflict to resolve between them.
+   */
+  description?: string
+  /** Default metadata for auto-registration. Same precedence as `description`. */
+  metadata?: Record<string, string>
   /** Append the mesh protocol to the system prompt. Default: true. */
   injectSystemPrompt?: boolean
   heartbeatIntervalMs?: number
@@ -92,6 +101,10 @@ export type MeshConfig = {
   id?: string
   hostId: string
   autoRegister: boolean
+  /** Undefined means "generate one per session". */
+  description?: string
+  /** Undefined means no defaults, so peers see an empty map. */
+  metadata?: Record<string, string>
   injectSystemPrompt: boolean
   heartbeatIntervalMs: number
   staleAfterMs: number
@@ -193,6 +206,10 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.autoRegister,
       DEFAULTS.autoRegister,
     ) as boolean,
+    // No env form: a description is prose, and a whole role sentence in an env
+    // var is worse to maintain than in the project's plugin config.
+    description: options.description,
+    metadata: options.metadata,
     injectSystemPrompt: pick(
       envBool("AGENTMESH_INJECT_SYSTEM_PROMPT"),
       options.injectSystemPrompt,
