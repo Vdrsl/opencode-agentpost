@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Phase 4: Address inheritance
+## v0.13.0 — Phase 4: Address inheritance
 - A recreated chat in the same directory inherits its predecessor's address instead of minting a new name, so its mailbox survives a session being closed and reopened. The name is still hashed from the `sessionID`; what changed is that a fresh session now claims the address the dead one left behind, along with the description and metadata it was using.
 - A record is handed out only when its owner is genuinely gone: `takeable` is `!pidAlive(pid) || ageMs(recordMtime) >= presenceReapMs`, deliberately not `status`. A hung process keeps heartbeating and looks alive for the whole reap window, and reusing `status` would have added `staleAfterMs` on top. `pickFree` uses the same criterion, so both paths that hand out an address agree.
 - A fenced heartbeat now stops the watcher instead of only logging. A session that lost its address stands down rather than delivering into a mailbox another session now owns. The window between the record changing hands and the loser's next heartbeat is a documented limit, not a silent one: the record is a plain atomic rewrite, last write wins, and an `fs.link` claim is the possible later hardening.
@@ -8,7 +8,7 @@
 - Mail in a lost address's mailbox stays there. It is not forwarded to the new address, because that address may itself be claimed later, and moving mail between addresses is how mail ends up read by a stranger.
 - Inheritance holds for the lifetime of the predecessor's record, which is `presenceReapMs` by default. Recreate a chat later than that and it gets a new name; the old mailbox is reaped like any other.
 
-## Unreleased — Phase 3.5: Adaptive delivery
+## v0.12.0 — Phase 3.5: Adaptive delivery
 - Fix a delivery-correctness bug present since the first release: claiming a message used `fs.rename`, and on Windows two concurrent renames of the same source both succeed, so two delivery paths could each believe they owned one message. Claiming is now `fs.link`, which is exclusive by definition; `EEXIST` is the normal losing outcome, and a crash between link and drop leaves two names on one inode that recovery consolidates. This undercuts the at-most-once guarantee, so it is a correctness fix rather than part of the feature below.
 - Adaptive delivery: idle with one pending message injects the body as before; two or more produce a single notice and the model calls `agentmesh_fetch` once for the batch. After `fetchFallbackMs` the fallback body-injects whatever is still pending, so a model that ignores the notice still gets its mail.
 - `agentmesh_fetch` is now consuming: it claims with the same atomic primitive the injector uses, stamps `processed/<msgid>.json` with `via`, and takes the messages out of the inbox. Returns `hasMore` so a batch larger than `fetchLimit` can be paged through.

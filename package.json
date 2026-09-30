@@ -1,6 +1,6 @@
 {
   "name": "@vdrsl/opencode-agentmesh",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Peer-to-peer messaging between opencode agents running in different sessions, directories and servers",
   "keywords": ["opencode", "opencode-plugin", "agent", "multi-agent", "mesh"],
   "license": "MIT",
