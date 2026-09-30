@@ -131,6 +131,23 @@ export async function listJsonFiles(dir: string): Promise<string[]> {
   }
 }
 
+/**
+ * Claimed message files, sorted. A claim is unread mail that `listJsonFiles`
+ * cannot see, because the name ends in `.taken` rather than `.json`.
+ */
+export async function listClaims(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".taken"))
+      .map((entry) => entry.name)
+      .sort()
+  } catch (error) {
+    if (isMissing(error)) return []
+    throw error
+  }
+}
+
 /** Subdirectory names, sorted. Missing directory reads as empty. */
 export async function listDirs(root: string): Promise<string[]> {
   try {

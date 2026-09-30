@@ -12,12 +12,20 @@ import { parseEnvelope, renderEnvelope } from "../src/envelope.ts"
 import { enqueue, InboxWatcher, readAck, readProcessedDepth, readProcessedThreadId } from "../src/inbox.ts"
 import { newMessageId } from "../src/ids.ts"
 import { readOutboxEntry, sweepOutbox, writeOutboxEntry } from "../src/outbox.ts"
-import { claimFile, readJson, writeJsonAtomic } from "../src/store.ts"
+import { claimFile, readJson, removeFile, writeJsonAtomic } from "../src/store.ts"
 import { resolveConfig, TOOL_FETCH, TOOL_REGISTER } from "../src/config.ts"
 import { noopLogger } from "../src/logger.ts"
 import { buildTools } from "../src/tools.ts"
 import { type ClaimMeta, MeshError, PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "../src/types.ts"
-import { messageFiles, sessionContext, tempHome, testConfig, testMesh, waitFor } from "./helpers.ts"
+import {
+  messageFiles,
+  sessionContext,
+  stageLiveClaim,
+  tempHome,
+  testConfig,
+  testMesh,
+  waitFor,
+} from "./helpers.ts"
 
 const cleanups: (() => Promise<void>)[] = []
 after(async () => {
@@ -1116,6 +1124,41 @@ describe("mesh", () => {
 
     // A second fetch must not hand the same message back.
     assert.deepEqual(await watcher.takeBatch(10), { messages: [], hasMore: false })
+  })
+
+  it("reports hasMore for a live claim of its own, not for a foreign one", async () => {
+    // Found live: a fetch that took everything said `hasMore: false` while our
+    // own claim sat on disk, so the model stopped paging and the message waited
+    // for the next notification instead of being delivered. Counting `*.taken`
+    // naively is not the fix either — a claim another watcher holds is being
+    // injected into that session and is not ours to fetch (see the mid-inject
+    // takeover race), so counting it would page forever.
+    const { config } = await twoAgents()
+    const mine = idleWatcher(config, "reviewer")
+    const held = newMessageId()
+    const foreign = newMessageId()
+    await stageLiveClaim(path.join(config.inboxDir, "reviewer"), {
+      ...leaseMessageWithId(held),
+      to: "reviewer",
+      from: "planner",
+    })
+    // The same staged claim, but stamped with another watcher's identity.
+    await writeJsonAtomic(path.join(config.inboxDir, "reviewer", `${foreign}.json`), {
+      ...leaseMessageWithId(foreign),
+      to: "reviewer",
+      from: "planner",
+    })
+    await claimFile(
+      path.join(config.inboxDir, "reviewer", `${foreign}.json`),
+      ".taken",
+      { ...leaseClaim("soon"), ownerInstance: "someone-else", incarnation: "other" },
+    )
+    await removeFile(path.join(config.inboxDir, "reviewer", `${foreign}.json`))
+
+    const result = await mine.takeBatch(10)
+    assert.deepEqual(result.messages, [])
+    // One of the two claims is ours: still more mail.
+    assert.equal(result.hasMore, true)
   })
 
   it("reports hasMore and stops at the limit", async () => {

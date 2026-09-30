@@ -22,6 +22,7 @@ import {
   claimFile,
   ensureDir,
   fileExists,
+  listClaims,
   listJsonFiles,
   readJson,
   readJsonWithMtime,
@@ -672,7 +673,26 @@ export class InboxWatcher {
       await removeFile(held.path)
       messages.push(held.message)
     }
-    const hasMore = (await listJsonFiles(this.dir)).length > 0
+    // A claim in flight is unread mail too. Counting only `*.json` reported
+    // `hasMore: false` while a `*.json.taken` was still on disk, and a model
+    // that trusts it stops paginating — the message then waits for the next
+    // notification instead of being fetched.
+    //
+    // Our own claims count: we hold them, we are mid-inject or deferring, and
+    // they will be delivered by us. A claim held by *another* watcher does not,
+    // because that message is already being injected into that session and is
+    // not ours to fetch — counting it would page forever against a message we can
+    // never take (the mid-inject takeover race).
+    const [pending, claims] = await Promise.all([
+      listJsonFiles(this.dir),
+      listClaims(this.dir),
+    ])
+    let ours = 0
+    for (const name of claims) {
+      const held = await readJson<{ _claim?: ClaimMeta }>(path.join(this.dir, name))
+      if (held?._claim?.ownerInstance === this.ownerInstance) ours += 1
+    }
+    const hasMore = pending.length > 0 || ours > 0
     // M6, extended: a fetch is activity, so it moves the fallback deadline and
     // keeps the notification suppressed while pagination is going on. A fetch
     // that took the last of the pile resolves the batch outright, and a fetch

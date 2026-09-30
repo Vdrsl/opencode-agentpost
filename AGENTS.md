@@ -104,15 +104,21 @@ Correctness rests on facts that are easy to break accidentally:
   new per-message state follows this split, not a shared file.
 - **Reading the mailbox is never the delivery path.** Injection is: the recipient's own watcher
   claims a message, injects it, stamps `processed/<msgid>.json` and only then deletes the inbox
-  copy. `agentmesh_fetch` is the read-only escape hatch for the message that never got that far
-  (a crashed session, or one still held by a busy session) and it **excludes anything with a
-  processed marker**, so a model can never be shown a turn it already saw. `agentmesh_deliveries`
+  copy. `agentmesh_fetch` is the consuming escape hatch for a batch the watcher could not inject
+  (a busy session, or a crashed one), and it **excludes anything with a processed marker**, so a
+  model can never be shown a turn it already saw. `agentmesh_deliveries`
   reads `outbox/` filtered by the entry's `from` — that field is the only reason a shared outbox
   directory can stay owner-private, so write it on every entry.
 - **One winner per `msgid`, and the batch decision is made on claims, never on a readdir count.** A
   count is a stale read, so `drain` claims up to `fetchLimit` files first and then looks at what it
   holds. The claim primitive is what makes this hold across `fetch` and the fallback racing for the
   same files; a lost claim is `EEXIST`, never an error.
+- **`hasMore` counts our own claims, not every claim.** A `.json.taken` is unread mail that
+  `listJsonFiles` cannot see, so counting only `*.json` told a fetching model `hasMore: false`
+  while our own claim sat on disk — it stopped paging and the message waited for the next
+  notification. Counting every `.taken` is not the fix: a claim another watcher holds is being
+  injected into that session and is not ours to fetch (mid-inject takeover), so counting it pages
+  forever. Ownership is the discriminator — `ownerInstance` on the claim.
 - **Adaptive delivery: idle + 1 pending → inject the body; ≥2 → one notification, no bodies.** The
   notification is a wake-up, not a message: no `msgid`, no `processed` marker, no ack. `notifiedAt`
   (M6) is per-watcher in-memory state doing two jobs — suppressing a repeat notification while the
