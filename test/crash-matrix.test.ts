@@ -212,9 +212,12 @@ describe("crash matrix", () => {
     try {
 await watcher.start()
       await watcher.stop()
-      // Untouched: the claim is young, even though the message is old.
+      // Untouched: the claim is young, even though the message is old. The
+      // pending name has to stay as well — a lone `.taken` is not a `.json`
+      // file, so dropping the pending name while declining the claim would
+      // strand the message where no future drain can find it.
       assert.equal(await exists(f.claimed(msg.id)), true)
-      assert.equal(await exists(f.pending(msg.id)), false)
+      assert.equal(await exists(f.pending(msg.id)), true)
 
       // Age it past the lease and it is recovered, because now nothing can hold it.
       const second = new InboxWatcher(

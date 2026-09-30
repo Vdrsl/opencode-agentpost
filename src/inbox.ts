@@ -459,19 +459,24 @@ export class InboxWatcher {
       const base = name.slice(0, -CLAIM_SUFFIX.length)
       const original = path.join(this.dir, base)
       // A crash between creating the hard link and dropping the pending name
-      // leaves both names pointing at the same inode. The claim is the fact, so
-      // the pending name is the lie: drop it here, or every drain from now on
-      // would try to claim it, lose on EEXIST and find it again next poll.
-      if (await fileExists(original)) await removeFile(original)
+      // leaves both names pointing at the same inode. The claim is the fact and
+      // the pending name is the lie, so the pending name goes below — but only
+      // in the branches that actually take the claim over. Dropping it up front
+      // would strand the message: a claim we decline to take (the lease is still
+      // live) then sits there alone, and a lone `.taken` is not a `.json` file,
+      // so no drain ever sees a message to lose a claim race against and
+      // recovery is never entered again.
       const messageId = base.replace(/\.json$/, "")
       if (isMessageId(messageId)) {
         const ack = await readAck(this.config, messageId, this.id)
         if (ack?.status === "accepted") {
+          await removeFile(original)
           await removeFile(taken)
           continue
         }
         if (await hasProcessedMarker(this.config, messageId)) {
           await writeAcceptedAck(this.config, messageId, this.id, this.sessionID)
+          await removeFile(original)
           await removeFile(taken)
           continue
         }

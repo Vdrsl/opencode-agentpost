@@ -67,6 +67,14 @@ Correctness rests on facts that are easy to break accidentally:
   between link and drop leaves two names on one inode — same file, not two copies, which
   `recoverClaimed` consolidates. Orphaned claims from a crashed process are restored on watcher start
   (`InboxWatcher.recoverClaimed`).
+- **Recovery consolidates two names only in the branch that takes the claim over.** A crash between
+  link and drop leaves the pending name as the lie, and dropping it is what stops every later drain
+  from losing a claim race against it forever. But it may only be dropped once recovery is actually
+  taking over: a claim it declines (the lease is still live, or the ctime is too young) must keep the
+  pending name. A lone `*.json.taken` is not a `*.json` file, so `drain` sees no message to lose a
+  claim against, and `recoverClaimed` — which only runs from `start()` or from that "nothing could be
+  claimed" branch — is never entered again. Dropping it early strands the message in a directory that
+  looks empty. Caught by C7, and C9 used to assert the stranding as correct.
 - **Local processed markers suppress replay after a successful injection.** They are recipient-owned
   state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
