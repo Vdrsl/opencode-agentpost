@@ -1858,6 +1858,179 @@ describe("mesh", () => {
     assert.notEqual(second, first)
   })
 
+  it("hands a recreated session the address and mailbox of its predecessor", async () => {
+    const { a, b, config } = await twoAgents()
+    const first = await a.mesh.autoRegister(sessionContext("ses_old", "/tmp/My Project"))
+    assert.ok(first)
+    // Mail sitting in the old address's inbox: the whole point of inheriting.
+    const queued = newMessageId()
+    await enqueue(config, { ...leaseMessageWithId(queued), to: first, from: "planner" })
+    // The old process is gone.
+    const record = (await a.mesh.registry.get(first))!.record
+    record.pid = 2 ** 30
+    await writeJsonAtomic(a.mesh.registry.recordPath(first), record)
+
+    const second = await b.mesh.autoRegister(sessionContext("ses_new", "/tmp/My Project"))
+    assert.equal(second, first)
+    // The mailbox did not move: the address did, so it stayed put, and the new
+    // owner's watcher picks the queued mail up from it.
+    await waitFor(async () =>
+      Boolean(await readAck(config, queued, first).catch(() => undefined)),
+    )
+    // The mailbox did not move: the address did, so it stayed put.
+    assert.equal((await a.mesh.registry.get(first))!.record.routing.sessionID, "ses_new")
+  })
+
+  it("carries a predecessor's description onto the session that inherits its address", async () => {
+    const { a, b } = await twoAgents()
+    const first = await a.mesh.autoRegister(sessionContext("ses_old", "/tmp/My Project"))
+    const record = (await a.mesh.registry.get(first))!.record
+    record.pid = 2 ** 30
+    record.description = "owns the migration"
+    record.metadata = { role: "lead" }
+    await writeJsonAtomic(a.mesh.registry.recordPath(first), record)
+
+    assert.equal(
+      await b.mesh.autoRegister(sessionContext("ses_new", "/tmp/My Project")),
+      first,
+    )
+    const inherited = (await b.mesh.registry.get(first))!.record
+    assert.equal(inherited.description, "owns the migration")
+    assert.deepEqual(inherited.metadata, { role: "lead" })
+  })
+
+  it("leaves two live sessions in one directory on their own addresses", async () => {
+    const { a, b, config } = await twoAgents()
+    const first = await a.mesh.autoRegister(sessionContext("ses_a", "/tmp/My Project"))
+    const second = await b.mesh.autoRegister(sessionContext("ses_b", "/tmp/My Project"))
+    assert.notEqual(first, second)
+    assert.equal((await a.mesh.registry.get(first))!.record.routing.sessionID, "ses_a")
+    assert.equal((await b.mesh.registry.get(second))!.record.routing.sessionID, "ses_b")
+    // And a third session in that directory takes neither while both are alive.
+    const c = testMesh(config)
+    cleanups.push(async () => {
+      await c.mesh.dispose()
+    })
+    const third = await c.mesh.autoRegister(sessionContext("ses_c", "/tmp/My Project"))
+    assert.ok(third)
+    assert.notEqual(third, first)
+    assert.notEqual(third, second)
+  })
+
+  it("mints a new name once the predecessor's record has been reaped", async () => {
+    const { a, b, config } = await twoAgents({ presenceReapMs: 1_000 })
+    const first = await a.mesh.autoRegister(sessionContext("ses_old", "/tmp/My Project"))
+    const gone = (await a.mesh.registry.get(first))!.record
+    gone.pid = 2 ** 30
+    await writeJsonAtomic(a.mesh.registry.recordPath(first), gone)
+    await a.mesh.registry.reap(Date.now() + 2_000)
+    assert.equal(await a.mesh.registry.get(first), undefined)
+
+    const second = await b.mesh.autoRegister(sessionContext("ses_new", "/tmp/My Project"))
+    assert.notEqual(second, first)
+  })
+
+  it("leaves one winner when two recreated sessions race for the same address", async () => {
+    const { a, b, config } = await twoAgents({ heartbeatIntervalMs: 20 })
+    // The predecessor is a dead process, not a closed one: its record survives
+    // until the reap, and nobody is watching its inbox any more. Registering it
+    // straight through the registry models exactly that — no Mesh, no watcher.
+    const first = "planner"
+    await a.mesh.registry.register({
+      id: first,
+      description: "was here first",
+      routing: {
+        sessionID: "ses_old",
+        directory: "/tmp/My Project",
+        worktree: "/tmp/My Project",
+        serverUrl: "http://127.0.0.1:4096",
+      },
+      force: true,
+    })
+    const gone = (await a.mesh.registry.get(first))!.record
+    gone.pid = 2 ** 30
+    await writeJsonAtomic(a.mesh.registry.recordPath(first), gone)
+
+    // Both newcomers see the same dead predecessor and both try to take it.
+    const [left, right] = await Promise.all([
+      b.mesh.autoRegister(sessionContext("ses_new_a", "/tmp/My Project")),
+      a.mesh.autoRegister(sessionContext("ses_new_b", "/tmp/My Project")),
+    ])
+
+// The address file is a plain atomic rewrite, not a claim: last write wins.
+// That is the honest limit of this layer, so the test asserts the outcome that
+// follows rather than a mutual exclusion that is not implemented. Both newcomers
+// read the same takeable predecessor, so both are handed the same address — the
+// race decides which session keeps it, not who gets it.
+const holder = (await a.mesh.registry.get(first))?.record.routing.sessionID
+assert.ok(holder === "ses_new_a" || holder === "ses_new_b")
+assert.equal(left, right)
+    assert.ok(left && right)
+
+    // ses_new_a belongs to mesh b and ses_new_b to mesh a, so the holder of the
+    // record decides which mesh keeps its watcher. The loser's own mesh is the
+    // only one that can drop that session: the winner's mesh still holds it, and
+    // waiting for both would never come true.
+    const winner = holder === "ses_new_a" ? b : a
+    const loser = winner === a ? b : a
+    const loserSession = loser === a ? "ses_new_b" : "ses_new_a"
+    await waitFor(() => loser.mesh.selfId(loserSession) === undefined)
+    await enqueue(config, { ...leaseMessage(), id: newMessageId(), to: first, from: "planner" })
+
+    // Exactly one of them delivers, and the loser delivers nothing at all.
+    await waitFor(() => winner.injected.length === 1, 3_000)
+    assert.deepEqual(loser.injected, [])
+  })
+
+  it("stops delivering into a session that lost its address to another", async () => {
+    const { config, a, b } = await twoAgents({ heartbeatIntervalMs: 20 })
+    const context = sessionContext("ses_b", "/tmp/reviewer")
+    const id = await b.mesh.autoRegister(context)
+    // The original owner looks gone, which is what lets a rival claim the
+    // address at all. Its session, however, is still running and still heartbeating.
+    const record = (await b.mesh.registry.get(id))!.record
+    record.pid = 2 ** 30
+    await writeJsonAtomic(b.mesh.registry.recordPath(id), record)
+
+    const rival = await a.mesh.autoRegister({ ...context, sessionID: "ses_rival" })
+    assert.equal(rival, id)
+
+    // The first owner is fenced and stands down rather than delivering into a
+    // session that no longer owns the mailbox.
+    await waitFor(() => b.mesh.selfId("ses_b") === undefined)
+    const messageId = newMessageId()
+    await enqueue(config, { ...leaseMessage(), id: messageId, to: id, from: "planner" })
+
+    // The rival owns the mailbox now, so it is the one that delivers.
+    await waitFor(() => a.injected.length === 1, 3_000)
+    // And the fenced session never injects, not once, not later.
+    assert.deepEqual(b.injected, [])
+  })
+
+  it("keeps a session delivering when its record is reaped but nobody took the address", async () => {
+    const { config, a } = await twoAgents({ heartbeatIntervalMs: 20 })
+    const id = await a.mesh.register({
+      context: sessionContext("ses_a", "/tmp/planner"),
+      id: "planner",
+      description: "owns the migration",
+      metadata: { role: "lead" },
+    }).then((r) => r.self.id)
+    // Some other mesh's sweep reaped the record while this session was blocked.
+    // Nobody claimed the address — that is what distinguishes this from a fence.
+    await fs.rm(a.mesh.registry.recordPath(id), { force: true })
+    await waitFor(async () => (await a.mesh.registry.get(id)) !== undefined)
+
+    const messageId = newMessageId()
+    await enqueue(config, { ...leaseMessage(), id: messageId, to: id, from: "reviewer" })
+    await waitFor(() => a.injected.length === 1, 3_000)
+
+    // Written back as the same colleague, not as a fresh anonymous process.
+    const restored = (await a.mesh.registry.get(id))?.record
+    assert.equal(restored?.routing.sessionID, "ses_a")
+    assert.equal(restored?.description, "owns the migration")
+    assert.deepEqual(restored?.metadata, { role: "lead" })
+  })
+
   it("keeps a pinned config id instead of a generated name", async () => {
     const { a } = await twoAgents({ id: "pinned-name" })
     assert.equal(await a.mesh.autoRegister(sessionContext("ses_a", "/tmp/My Project")), "pinned-name")

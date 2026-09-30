@@ -70,6 +70,10 @@ type SessionAgent = {
   watcher: InboxWatcher
   ownerInstance?: string
   incarnation?: string
+  // Kept so a session whose record was reaped under it can write the same one
+  // back instead of falling back to the anonymous default.
+  description: string
+  metadata: Record<string, string>
 }
 
 const REAP_INTERVAL_MS = 60_000
@@ -98,14 +102,28 @@ export class Mesh {
   }
 
   private async tick(): Promise<void> {
-    for (const [sessionID, agent] of this.agents) {
+    for (const [sessionID, agent] of [...this.agents]) {
       try {
-        const alive = await this.registry.heartbeat(agent.id, {
+        const state = await this.registry.heartbeat(agent.id, {
           ownerInstance: agent.ownerInstance ?? this.ownerInstance,
           incarnation: agent.incarnation ?? "",
         })
-        if (!alive) {
+        if (state === "fenced") {
+          // Fenced: another session took this address, so the mailbox we have
+          // been delivering into is now that session's. Stop the watcher before
+          // the next message lands in a session that no longer owns the id —
+          // unregisterSession is fenced too, and takes the watcher down with it.
           this.deps.logger("warn", "heartbeat_fenced")
+          await this.unregisterSession(sessionID)
+        } else if (state === "missing") {
+          // Our record is gone, which is not a takeover: nobody claimed this
+          // address, some sweep simply reaped a record that went quiet while this
+          // session was blocked past presenceReapMs. The mailbox outlives the
+          // record by design and is still collecting mail, so stopping here would
+          // leave peers queueing into an addressable inbox nobody reads. Write
+          // the record back instead. Deliberately not forced — if a live session
+          // took the address in the meantime, register refuses and we stand down.
+          await this.reRegister(agent)
         }
       } catch (error) {
         this.deps.logger("error", "heartbeat_failed")
@@ -200,6 +218,8 @@ export class Mesh {
         watcher,
         ownerInstance: record.ownerInstance,
         incarnation: record.incarnation,
+        description: record.description,
+        metadata: record.metadata ?? {},
       })
       await watcher.start()
     } else {
@@ -209,6 +229,8 @@ export class Mesh {
          watcher: previous.watcher,
          ownerInstance: record.ownerInstance,
          incarnation: record.incarnation,
+         description: record.description,
+         metadata: record.metadata ?? {},
        })
     }
     this.startTimer()
@@ -245,19 +267,34 @@ export class Mesh {
     // A pinned id is the operator's choice and keeps its directory-free form;
     // otherwise the name is hashed from the session, not the directory, so two
     // chats in one directory never end up as `repo` and `repo-2`.
+    // A session that recreates its chat gets a new session id, and a name hashed
+    // from that would change too — stranding the mailbox the old address owned.
+    // So claim the predecessor's address when there is one to claim, and inherit
+    // what it said about itself while we are at it.
+    const inherited = this.config.id
+      ? undefined
+      : await this.registry.inheritableAddress(context.directory, context.sessionID)
     const id = this.config.id
       ? await this.registry.allocateId(this.preferredId(context), context.sessionID)
-      : await this.registry.allocateName(context.sessionID)
+      : inherited?.record.id ?? (await this.registry.allocateName(context.sessionID))
     const existing = await this.registry.get(id)
     const reuse =
       existing && existing.record.routing.sessionID === context.sessionID
         ? existing.record
         : undefined
+    // The predecessor's record is the one carrying its description, so a session
+    // that comes back after an hour reads as the same colleague rather than as a
+    // background process. This works only because the record outlives the gap:
+    // past presenceReapMs it is reaped and the mailbox with it.
+    const carried = inherited?.record
     await this.register({
       context,
       id,
-      description: reuse?.description ?? `opencode agent working in ${context.directory}`,
-      metadata: reuse?.metadata ?? {},
+      description:
+        reuse?.description ??
+        carried?.description ??
+        `opencode agent working in ${context.directory}`,
+      metadata: reuse?.metadata ?? carried?.metadata ?? {},
       force: true,
     })
     this.deps.logger("info", "auto_registered")
@@ -277,6 +314,39 @@ export class Mesh {
     } catch (error) {
       if (error instanceof MeshError && error.code === ErrorCode.FENCED) {
         this.deps.logger("warn", "unregister_fenced")
+        return
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Write back a record that a sweep reaped from under a live session.
+   *
+   * Not `force`: the question this answers is "nobody took this address", and
+   * `register` already refuses when a live session holds it. A refusal is the
+   * answer, not an error — it means the address moved on while we were away, so
+   * the watcher goes down the fenced path and the mailbox is that session's now.
+   */
+  private async reRegister(agent: SessionAgent): Promise<void> {
+    const sessionID = agent.routing.sessionID
+    try {
+      await this.register({
+        context: {
+          sessionID,
+          directory: agent.routing.directory,
+          worktree: agent.routing.worktree,
+          serverUrl: agent.routing.serverUrl,
+        },
+        id: agent.id,
+        description: agent.description,
+        metadata: agent.metadata,
+      })
+      this.deps.logger("info", "record_restored")
+    } catch (error) {
+      if (error instanceof MeshError && error.code === ErrorCode.CONFLICT) {
+        this.deps.logger("warn", "heartbeat_fenced")
+        await this.unregisterSession(sessionID)
         return
       }
       throw error

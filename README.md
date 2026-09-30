@@ -113,6 +113,21 @@ a returning agent is briefly indistinguishable from a background process that
 never introduced itself, so call `agentmesh_register` once per session when you
 have a role to describe.
 
+Recreating a chat in the same directory is a different problem, and it does not
+orphan the mailbox. A fresh session asks the registry for an address its
+predecessor left behind: one whose process is gone, or whose record has been
+quiet for `presenceReapMs`. It takes the most recent such address, along with
+the description and metadata the predecessor was using. Two chats open at once
+each keep their own address, because a live one is never handed out.
+
+The window is the record's own lifetime. Recreate a chat after the record is
+reaped and it gets a new name, and the mailbox of the old one is cleaned up like
+any other. A winner is decided by the last write to the record, so a loser learns
+it lost on its next heartbeat and stands down rather than delivering into a
+mailbox it no longer owns. Mail already in a lost address's mailbox stays there;
+it is not forwarded to the new address, because a new address may itself be
+claimed later.
+
 ### No daemon, just files
 
 Every agent's plugin instance coordinates through one shared home directory

@@ -9,8 +9,8 @@ No code in this phase may be written until this contract is agreed.
 
 ## The problem, stated precisely
 
-`Registry.allocateName` derives a name from `sessionID` via `agentName`
-(`src/registry.ts:257`). A new session means a new `sessionID`, so it means a new
+`Registry.allocateName` derives a name from `sessionID` via `agentName`. A new
+session means a new `sessionID`, so it means a new
 name. The old name's `inbox/<id>/` still holds mail that a peer will keep sending
 to, because that peer only knows the address. Nothing warns anybody: the sender
 gets `queued`, the message waits forever, `cleanupExpiredMessages` eventually
@@ -64,7 +64,7 @@ takeable = !pidAlive(pid) || ageMs(recordMtime, now) >= presenceReapMs
 
 - A live process that has gone quiet for under `presenceReapMs`: **not** takeable.
   This is the case `status !== "alive"` gets wrong today, and it is why
-  `pickFree:234` is currently a hole — a hung opencode loses its mailbox to
+  `Registry.pickFree` is currently a hole — a hung opencode loses its mailbox to
   whoever registers next.
 - A dead process: takeable immediately. No waiting, so restarting a window does
   not cost the mailbox (closes the "quick recreate" question).
@@ -77,7 +77,7 @@ takeable = !pidAlive(pid) || ageMs(recordMtime, now) >= presenceReapMs
 `status`.** There are two, and both must change:
 
 - the new predecessor search above;
-- `Registry.pickFree` (`src/registry.ts:234`), which today accepts any record
+- `Registry.pickFree`, which today accepts any record
   that is not `alive`. That is the same hole reached by a different route: a
   re-registration could take a hung process's address while the predecessor
   search correctly refuses. `pickFree` answers "may I safely hold this mailbox",
@@ -115,7 +115,7 @@ the model to re-register. Layer 2 remains deferred.
 `unregister` check `sameOwner` and raise `E_FENCED`. What is missing is the
 consequence.
 
-Today `Mesh.tick` logs `heartbeat_fenced` and keeps going (`src/mesh.ts:107`).
+Today `Mesh.tick` logs `heartbeat_fenced` and keeps going.
 The fenced watcher keeps its inbox watcher running and keeps delivering mail into
 the session that lost the address. No message is duplicated — one winner per
 `msgid` still holds — but the message goes to the wrong session, and the model in

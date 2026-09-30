@@ -120,6 +120,23 @@ export class Registry {
     return pidAlive(record.pid) ? "alive" : "stale"
   }
 
+  /**
+   * May this address be handed to a session that is not its owner?
+   *
+   * Deliberately not `status`: a hung process still heartbeats its record, so it
+   * looks alive for as long as the sweep tolerates, and `stale` would report it
+   * as alive for another `staleAfterMs` on top. An address is takeable once the
+   * owner cannot be trusted to still want it — its process is gone, or it has
+   * been quiet long enough that the record is about to be reaped anyway.
+   *
+   * A reused pid is the case this exists for: the old process died, the new one
+   * inherited the number, and `pidAlive` answers true. Nothing is lost by
+   * waiting out `presenceReapMs`, because reap would drop the record anyway.
+   */
+  takeable(entry: RegistryEntry, now: number = Date.now()): boolean {
+    return !pidAlive(entry.record.pid) || ageMs(entry.mtimeMs, now) >= this.config.presenceReapMs
+  }
+
   async list(now: number = Date.now()): Promise<RegistryEntry[]> {
     const files = await listJsonFiles(this.config.agentsDir)
     const entries: RegistryEntry[] = []
@@ -189,12 +206,22 @@ export class Registry {
     return record
   }
 
-  /** Bump our mtime. Returns false when the record vanished or is fenced. */
-  async heartbeat(id: string, expected?: OwnerIdentity): Promise<boolean> {
+  /**
+   * Bump our mtime.
+   *
+   * `ok` refreshed it. `missing` means the record is gone — reaped by another
+   * mesh's sweep while this session was blocked past `presenceReapMs`. `fenced`
+   * means another session owns the address now.
+   *
+   * The caller must not read those two the same. A missing record is not a
+   * takeover: the mailbox is still ours and still addressable, so tearing the
+   * watcher down here would leave peers queueing mail that nobody ever reads.
+   */
+  async heartbeat(id: string, expected?: OwnerIdentity): Promise<"ok" | "missing" | "fenced"> {
     const entry = await this.get(id)
-    if (!entry) return false
-    if (entry.record.schemaVersion === 1 && !sameOwner(entry.record, expected)) return false
-    return touch(this.recordPath(id))
+    if (!entry) return "missing"
+    if (entry.record.schemaVersion === 1 && !sameOwner(entry.record, expected)) return "fenced"
+    return (await touch(this.recordPath(id))) ? "ok" : "missing"
   }
 
   async unregister(id: string, expected?: OwnerIdentity): Promise<void> {
@@ -231,9 +258,44 @@ export class Registry {
       const existing = await this.get(candidate, now)
       if (!existing) return candidate
       if (existing.record.routing.sessionID === sessionID) return candidate
-      if (existing.status !== "alive") return candidate
+      if (this.takeable(existing, now)) return candidate
     }
     return fallback
+  }
+
+  /**
+   * The address a new session should inherit, or undefined when it has none to
+   * inherit.
+   *
+   * Recreating a chat gives it a new session id, and a name hashed from the
+   * session id would therefore change — stranding the mailbox the address used
+   * to own, along with any mail queued in it. So a session starting in a
+   * directory that already had a takeable address claims that address instead of
+   * minting a new one, and the mailbox simply stays where it is.
+   *
+   * Only one address is inherited, the most recently seen takeable one, and only
+   * within `presenceReapMs` of the predecessor going quiet: past that the sweep
+   * reaps the record, the mailbox is reaped with it, and a tombstone would be
+   * preserving an address nobody is going to use.
+   *
+   * Returns the whole entry rather than its id. The caller needs the description
+   * and metadata the record carries, and re-reading them by id would be a second
+   * lookup whose answer can already be a different record than the one that
+   * justified the takeover.
+   */
+  async inheritableAddress(
+    directory: string,
+    sessionID: string,
+    now: number = Date.now(),
+  ): Promise<RegistryEntry | undefined> {
+    let best: RegistryEntry | undefined
+    for (const entry of await this.list(now)) {
+      if (entry.record.routing.directory !== directory) continue
+      if (entry.record.routing.sessionID === sessionID) continue
+      if (!this.takeable(entry, now)) continue
+      if (!best || entry.mtimeMs > best.mtimeMs) best = entry
+    }
+    return best
   }
 
   /**

@@ -131,6 +131,31 @@ Correctness rests on facts that are easy to break accidentally:
   purpose: a name that changed on every restart would orphan the peer's inbox and drift the address
   other agents send to. `Registry.pickFree` walks `attempt` past a name a live peer holds; an
   explicit `config.id` bypasses naming entirely (`Mesh.autoRegister` → `allocateId`).
+- **A recreated chat inherits its predecessor's address, it does not mint a new name.**
+  (`Registry.inheritableAddress`, `Registry.takeable`.) The name is hashed from the `sessionID`, so
+  recreating a chat would otherwise orphan the mailbox. A fresh session in the same
+  `routing.directory` takes the most recent address whose owner is gone — `takeable` is
+  `!pidAlive(pid) || ageMs(recordMtime) >= presenceReapMs`, deliberately *not* `status`: a hung process
+  keeps heartbeating and looks alive for the whole `presenceReapMs`, and `stale` would add `staleAfterMs`
+  on top. `pickFree` uses `takeable` too, for the same reason; both paths that hand out an address must
+  agree, or a hung peer holds a name forever. Description and metadata come across with the address,
+  which is why no separate identity profile exists.
+- **Ownership of a mailbox is decided by the record, and a loser stands down.** The record is a plain
+  atomic rewrite, not a `fs.link` claim: last write wins, and the loser learns it lost on its next
+  heartbeat, at which point `tick` stops the watcher (`heartbeat_fenced` →
+  `unregisterSession`). Until that heartbeat the fenced watcher can still deliver — a documented window,
+  not a defect. Mail in a lost address's mailbox is **not** forwarded to the new address: a new address
+  may itself be claimed later, and moving mail across addresses is how mail ends up read by a stranger.
+- **A heartbeat that comes back `missing` is not a fence, and must not stop the watcher.** `heartbeat`
+  returns `"ok" | "missing" | "fenced"` because the two failures mean opposite things: `fenced` is
+  another session's address now, while `missing` is a record some other mesh's sweep reaped while this
+  session was blocked past `presenceReapMs` — nobody claimed the address. The mailbox outlives the record
+  and is still addressable, so stopping on `missing` would leave peers queueing mail that nobody ever
+  reads: the same orphan-mailbox bug the record/mailbox split exists to prevent. `Mesh.reRegister`
+  writes the record back, keeping the description and metadata the session had introduced itself with,
+  and deliberately without `force` — `register` refuses when a live session holds the address, and that
+  refusal *is* the fence, which then goes down the fenced path. Collapsing `missing` into `fenced` is
+  how a session silently goes dark while its inbox keeps filling.
 - **A custom `description`/`metadata` does not outlive the presence record.** After
   `presenceReapMs` of silence (five minutes by default) the record is reaped, and auto-registration
   falls back to the generated description, so an agent that comes back is indistinguishable from a

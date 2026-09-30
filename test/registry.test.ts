@@ -5,6 +5,7 @@ import { after, describe, it } from "node:test"
 
 import { Registry } from "../src/registry.ts"
 import { agentName } from "../src/names.ts"
+import { writeJsonAtomic } from "../src/store.ts"
 import { type AgentRouting, MeshError } from "../src/types.ts"
 import { tempHome, testConfig } from "./helpers.ts"
 
@@ -24,6 +25,79 @@ function routing(sessionID: string, directory = "/tmp/project"): AgentRouting {
 }
 
 describe("registry", () => {
+  it("offers a takeable address to a session in the same directory", async () => {
+    const registry = await newRegistry()
+    // pid 2**30 cannot be running, so the record is takeable immediately.
+    await registry.register({ id: "planner", description: "plans", routing: routing("ses_old") })
+    const entry = (await registry.get("planner"))!
+    entry.record.pid = 2 ** 30
+    await writeJsonAtomic(registry.recordPath("planner"), entry.record)
+
+    assert.equal(
+      (await registry.inheritableAddress("/tmp/project", "ses_new"))?.record.id,
+      "planner",
+    )
+    // Its own address is not an inheritance, and another directory is nobody's.
+    assert.equal(await registry.inheritableAddress("/tmp/project", "ses_old"), undefined)
+    assert.equal(await registry.inheritableAddress("/tmp/elsewhere", "ses_new"), undefined)
+  })
+
+  it("keeps the address of a live process that is only briefly silent", async () => {
+    const registry = await newRegistry({ presenceReapMs: 3_600_000 })
+    await registry.register({ id: "planner", description: "plans", routing: routing("ses_old") })
+    // The test process is alive, so the pid check says "keep it" — but the
+    // record has not been touched for longer than staleAfterMs, which is exactly
+    // the case takeable exists for: a hung owner that still looks present.
+    const old = new Date(Date.now() - 600_000)
+    await fs.utimes(registry.recordPath("planner"), old, old)
+    const entry = (await registry.get("planner"))!
+
+    assert.equal(entry.status, "stale")
+    assert.equal(registry.takeable(entry), false)
+    assert.equal(await registry.inheritableAddress("/tmp/project", "ses_new"), undefined)
+  })
+
+  it("takes an address whose owner has been quiet past presenceReapMs", async () => {
+    const registry = await newRegistry({ presenceReapMs: 1_000 })
+    await registry.register({ id: "planner", description: "plans", routing: routing("ses_old") })
+    const entry = (await registry.get("planner"))!
+    const old = new Date(Date.now() - 2_000)
+    await fs.utimes(registry.recordPath("planner"), old, old)
+
+    assert.equal(registry.takeable((await registry.get("planner"))!), true)
+    assert.equal((await registry.inheritableAddress("/tmp/project", "ses_new"))?.record.id, "planner")
+  })
+
+  it("inherits the most recently seen address when a directory had several", async () => {
+    const registry = await newRegistry()
+    await registry.register({ id: "planner", description: "older", routing: routing("ses_a") })
+    await registry.register({ id: "reviewer", description: "newer", routing: routing("ses_b") })
+    // Both owners are gone; the later record is the one a recreated session gets,
+    // because the most recent predecessor is the likeliest to be the same chat.
+    for (const id of ["planner", "reviewer"]) {
+      const entry = (await registry.get(id))!
+      entry.record.pid = 2 ** 30
+      await writeJsonAtomic(registry.recordPath(id), entry.record)
+    }
+    const fresh = new Date(Date.now() - 60_000)
+    await fs.utimes(registry.recordPath("planner"), fresh, fresh)
+
+    assert.equal((await registry.inheritableAddress("/tmp/project", "ses_new"))?.record.id, "reviewer")
+  })
+
+  it("leaves a live address alone when another one is on offer", async () => {
+    const registry = await newRegistry()
+    await registry.register({ id: "reviewer", description: "live", routing: routing("ses_b") })
+    await registry.register({ id: "planner", description: "dead", routing: routing("ses_a") })
+    // `reviewer` is alive and keeps its address; the dead one is the only one on
+    // offer, so it is what a recreated session inherits.
+    const dead = (await registry.get("planner"))!
+    dead.record.pid = 2 ** 30
+    await writeJsonAtomic(registry.recordPath("planner"), dead.record)
+
+    assert.equal((await registry.inheritableAddress("/tmp/project", "ses_new"))?.record.id, "planner")
+  })
+
   it("registers and reads back an agent", async () => {
     const registry = await newRegistry()
     await registry.register({
@@ -99,13 +173,13 @@ describe("registry", () => {
       incarnation: second.incarnation!,
     }
 
-    assert.equal(await registry.heartbeat("planner", oldOwner), false)
+    assert.equal(await registry.heartbeat("planner", oldOwner), "fenced")
     await assert.rejects(
       registry.unregister("planner", oldOwner),
       (error: MeshError) => error.code === "E_FENCED",
     )
     assert.equal((await registry.get("planner"))?.record.ownerInstance, "owner-b")
-    assert.equal(await registry.heartbeat("planner", newOwner), true)
+    assert.equal(await registry.heartbeat("planner", newOwner), "ok")
   })
 
   it("lets a new session take over an id whose owner went stale", async () => {
