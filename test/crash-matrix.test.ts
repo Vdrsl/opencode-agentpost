@@ -231,6 +231,10 @@ await watcher.start()
       )
       await new Promise((resolve) => setTimeout(resolve, f.config.leaseDurationMs + 50))
       await second.start()
+      // Wait for delivery rather than reading the instant `stop()` resolves:
+      // recovery hands the claim back and the delivery then runs through the
+      // claim, so on a loaded machine the names are still on disk at that point.
+      await waitFor(async () => !(await exists(f.pending(msg.id))))
       await second.stop()
       // Recovery handed it back and the watcher delivered it, so both names are
       // gone and the processed marker proves it went out exactly once.
@@ -456,6 +460,76 @@ await watcher.start()
       assert.equal(await exists(f.processed(msg.id)), true)
     } finally {
       await stopAndRemove(f.home, watcher)
+    }
+  })
+
+  // The window between `fs.link` and `stampClaim`. `claimFile` links, drops the
+  // pending name, and only then stamps the lease, so a crash inside it leaves a
+  // claim whose owner is mid-claim and whose lease nobody can read. Recovery must
+  // not read that as stale: it falls back to the claim's own ctime and declines
+  // while the window is open, which is the only thing keeping the mail visible.
+  // An unstamped claim is staged by rewriting the file in place — an in-place
+  // write keeps the inode, so both names stay one file, which is the whole state
+  // under test. A helper that rewrote the claim atomically would quietly leave
+  // two inodes and test something else.
+  it("C11 leaves an unstamped claim alone while it is young, then delivers it once", async () => {
+    const f = await fixture({ leaseDurationMs: 60_000 })
+    const msg = { ...message(), to: "reviewer" }
+    const { taken } = await stageLiveClaim(f.inbox, msg, 60_000)
+    const raw = JSON.parse(await fs.readFile(taken, "utf8")) as Record<string, unknown>
+    delete raw["_claim"]
+    await fs.writeFile(taken, JSON.stringify(raw))
+    const staged = await fs.stat(taken)
+    assert.equal((await fs.stat(f.pending(msg.id))).ino, staged.ino)
+
+    let injected = 0
+    const watcher = new InboxWatcher(
+      f.config,
+      "reviewer",
+      "ses_a",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await watcher.start()
+      // No lease to respect, so ctime is the only evidence that the owner may
+      // still be injecting. Too young to be stale: decline, and keep the pending
+      // name — a lone `.taken` is not a `.json` file, so nothing else would ever
+      // look at this mail again.
+      await sleep(120)
+      assert.equal(injected, 0)
+      assert.equal(await exists(f.pending(msg.id)), true)
+      assert.equal(await exists(taken), true)
+      assert.equal(await exists(f.processed(msg.id)), false)
+    } finally {
+      await watcher.stop()
+    }
+
+    // The same unstamped claim, once the window has passed. `leaseDurationMs: 0`
+    // is how a test says "the window is over": ctime cannot be backdated, and
+    // rewriting the claim would stamp a lease that never existed.
+    const later = new InboxWatcher(
+      testConfig(f.home, { leaseDurationMs: 0, pollIntervalMs: 10 }),
+      "reviewer",
+      "ses_a",
+      "owner-a",
+      "incarnation-a",
+      async () => { injected++ },
+      () => {},
+    )
+    try {
+      await later.start()
+      // Wait for the terminal state, not for the handler — the injection runs
+      // before the marker is written and before the claim is dropped.
+      await waitFor(async () => !(await exists(f.pending(msg.id))) && !(await exists(taken)))
+      assert.equal(injected, 1)
+      assert.equal(await exists(f.processed(msg.id)), true)
+      const ack = await readJson<Record<string, unknown>>(f.ack(msg.id))
+      assert.equal(ack?.["status"], "accepted")
+    } finally {
+      await stopAndRemove(f.home, later)
     }
   })
 })

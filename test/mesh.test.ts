@@ -1716,6 +1716,12 @@ describe("mesh", () => {
     await waitFor(() => attempts > 2)
     await watcher.stop()
     await starting
+    // Wait for the claim to come back rather than reading the instant `stop()`
+    // resolves: `stop` only clears the timer, so a drain already in flight still
+    // holds the message as `*.json.taken`, and `messageFiles` cannot see that
+    // name. The message is never lost — the busy path returns it to the queue —
+    // but it is momentarily under the other name.
+    await waitFor(async () => (await messageFiles(inbox)).includes(`${message.id}.json`))
     const queued = await readJson<Record<string, unknown>>(
       path.join(inbox, `${message.id}.json`),
     )
