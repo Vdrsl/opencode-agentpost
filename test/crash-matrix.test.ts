@@ -447,9 +447,12 @@ await watcher.start()
       assert.equal(await exists(taken), true)
 
       await expireClaim(taken)
-      await waitFor(() => injected === 1)
-      assert.equal(await exists(f.pending(msg.id)), false)
-      assert.equal(await exists(taken), false)
+      // Wait for the terminal state, not for the handler. The injection runs
+      // before the marker is written and before the claim is dropped, so
+      // `injected === 1` is true while both names are still on disk — asserting
+      // on them right after passes on a slow machine and fails on a fast one.
+      await waitFor(async () => !(await exists(f.pending(msg.id))) && !(await exists(taken)))
+      assert.equal(injected, 1)
       assert.equal(await exists(f.processed(msg.id)), true)
     } finally {
       await stopAndRemove(f.home, watcher)
