@@ -1109,6 +1109,11 @@ describe("mesh", () => {
     assert.equal(marker?.["threadId"], threadId)
     assert.deepEqual(await messageFiles(path.join(config.inboxDir, "reviewer")), [])
 
+    // The sender must learn the outcome. Without the ack a fetched message sat
+    // at `queued` until it aged into `undeliverable`, which reads as "never
+    // arrived" for a message the model had just read.
+    assert.equal((await readAck(config, id, "reviewer"))?.status, "accepted")
+
     // A second fetch must not hand the same message back.
     assert.deepEqual(await watcher.takeBatch(10), { messages: [], hasMore: false })
   })

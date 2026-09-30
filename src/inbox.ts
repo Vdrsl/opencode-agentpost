@@ -660,6 +660,10 @@ export class InboxWatcher {
         threadIdOf(held.message),
         "fetch",
       )
+      // The same marker claimOne and recoverClaimed treat as accepted. Skipping
+      // this left the sender at `queued` until it aged into `undeliverable`,
+      // which reads as "never arrived" for a message the model just read.
+      await writeAcceptedAck(this.config, held.message.id, this.id, this.sessionID)
       await removeFile(held.path)
       messages.push(held.message)
     }
