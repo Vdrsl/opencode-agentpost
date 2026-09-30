@@ -138,9 +138,23 @@ address that is about to be freed. The mail returns when the address does.
 
 ## Layer 1, point 6: quick recreate
 
-Closed by the `takeable` predicate. A closed window leaves a dead pid, so the
-address is inherited immediately, no waiting for `staleAfterMs` and no waiting
-for `presenceReapMs`.
+**This point does not hold, and the reason is worth keeping.** It was written as
+"closed by the `takeable` predicate: a closed window leaves a dead pid, so the
+address is inherited immediately". Both halves are wrong in the shipped code.
+
+A closed window does not leave a dead pid: the record stores `process.pid`
+(`registry.ts:198`), which is the opencode *process*, shared by every session it
+hosts. And a close does not even reach `takeable` — `session.deleted`
+(`index.ts:137`) runs `unregisterSession` → `Registry.unregister`, which removes
+the record outright (`registry.ts:233`). `inheritableAddress` enumerates records,
+so with no record there is no candidate, and the predicate is never consulted.
+
+What survives a close is the `pid`; what does not is the record. So quick
+recreate only works when the predecessor dies *without* giving up its address —
+a crash, not a close. Verified live on 0.13.0, not reasoned about: after killing
+the process, `agents/<id>.json` was gone and reappeared only once the next
+session auto-registered. The invariant in `AGENTS.md` states the whole case,
+including the mailbox that outlives the record with nothing left to address it.
 
 ## Concurrent takeover is fenced, not atomic
 

@@ -125,6 +125,10 @@ Correctness rests on facts that are easy to break accidentally:
   batch is unresolved, and anchoring the `fetchFallbackMs` fallback deadline. It is deliberately not
   persisted: a restart re-notifies, which is faster, never lossy. Anything still `pending` when the
   deadline passes is body-injected, which is the old reliable path.
+  **A batch needs a busy recipient by construction, not by configuration.** One message is claimed and
+  injected before a second can arrive, so an idle recipient never batches: a soak that fires two sends
+  seconds apart sees `via: inject` twice and exercises nothing. To see the batch path, the recipient has
+  to be mid-turn so the first claim defers, and the second message lands inside `busyDeferMs`.
 - **A message consumed by `fetch` is consumed for good.** The marker is written before the file is
   removed, so a crash in between is a no-op rather than a redelivery. The cost is honest: unlike an
   inject, whose text lands in the session history as a user turn, a fetch result lives inside a
@@ -145,15 +149,23 @@ Correctness rests on facts that are easy to break accidentally:
   purpose: a name that changed on every restart would orphan the peer's inbox and drift the address
   other agents send to. `Registry.pickFree` walks `attempt` past a name a live peer holds; an
   explicit `config.id` bypasses naming entirely (`Mesh.autoRegister` → `allocateId`).
-- **A recreated chat inherits its predecessor's address, it does not mint a new name.**
-  (`Registry.inheritableAddress`, `Registry.takeable`.) The name is hashed from the `sessionID`, so
-  recreating a chat would otherwise orphan the mailbox. A fresh session in the same
+- **Inheritance covers a session that died *without giving up its address*, and nothing else.**
+  (`Registry.inheritableAddress`, `Registry.takeable`.) The name is hashed from the `sessionID`, so a
+  new `sessionID` would otherwise orphan the mailbox. A fresh session in the same
   `routing.directory` takes the most recent address whose owner is gone — `takeable` is
   `!pidAlive(pid) || ageMs(recordMtime) >= presenceReapMs`, deliberately *not* `status`: a hung process
   keeps heartbeating and looks alive for the whole `presenceReapMs`, and `stale` would add `staleAfterMs`
   on top. `pickFree` uses `takeable` too, for the same reason; both paths that hand out an address must
   agree, or a hung peer holds a name forever. Description and metadata come across with the address,
   which is why no separate identity profile exists.
+  **A clean session close is not that case.** `session.deleted` runs `unregisterSession` →
+  `Registry.unregister`, which removes the record, and inheritance enumerates records — so with no
+  record there is no candidate, and it *cannot* fire on Ctrl+C or a closed window. Worse, the mailbox
+  survives that unregister (nothing touches `inbox/<id>/`), so `send` keeps accepting the address
+  (`Mesh.inboxDirExists`) and queues mail into a box no future session will ever read, because
+  `cleanupOrphanedInboxes` only reaps an *empty* one. Verified live on 0.13.0, not reasoned about: the
+  record was gone after close, so the address was never offered. Testing inheritance needs a death
+  that leaves no `session.deleted` — a crash, not a close.
 - **Ownership of a mailbox is decided by the record, and a loser stands down.** The record is a plain
   atomic rewrite, not a `fs.link` claim: last write wins, and the loser learns it lost on its next
   heartbeat, at which point `tick` stops the watcher (`heartbeat_fenced` →

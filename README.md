@@ -113,12 +113,18 @@ a returning agent is briefly indistinguishable from a background process that
 never introduced itself, so call `agentmesh_register` once per session when you
 have a role to describe.
 
-Recreating a chat in the same directory is a different problem, and it does not
-orphan the mailbox. A fresh session asks the registry for an address its
-predecessor left behind: one whose process is gone, or whose record has been
-quiet for `presenceReapMs`. It takes the most recent such address, along with
-the description and metadata the predecessor was using. Two chats open at once
-each keep their own address, because a live one is never handed out.
+A session that dies **without giving up its address** — a crash, not a closed
+window — does not orphan the mailbox. A fresh session asks the registry for an
+address its predecessor left behind: one whose process is gone, or whose record
+has been quiet for `presenceReapMs`. It takes the most recent such address,
+along with the description and metadata the predecessor was using. Two chats
+open at once each keep their own address, because a live one is never handed out.
+
+Closing a chat normally is **not** that case, and it is worth knowing why.
+`session.deleted` unregisters the record, inheritance looks at records, so with
+no record there is no candidate and inheritance cannot fire on `Ctrl+C`. The
+mailbox outlives that unregister, so mail sent to the closed chat's address
+still queues — into a box no later session will read.
 
 The window is the record's own lifetime. Recreate a chat after the record is
 reaped and it gets a new name, and the mailbox of the old one is cleaned up like

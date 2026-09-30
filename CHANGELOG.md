@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- Correction to the v0.13.0 entry below, found on live data: it says inheritance means
+  "its mailbox survives a session being closed and reopened". It does not. Closing a
+  session fires `session.deleted` → `unregisterSession` → `Registry.unregister`, which
+  deletes the record, and inheritance enumerates records — so there is no candidate and
+  the predicate is never consulted. Verified live on 0.13.0: after killing the process
+  `agents/<id>.json` was gone, and returned only when the next session auto-registered.
+  Inheritance covers a predecessor that died *without giving up its address* — a crash,
+  not a close. A record also holds `process.pid`, the opencode process, so two live
+  chats in one process can never take each other's address. The behaviour is unchanged;
+  only the claim about it was wrong. Reopening the *same* chat keeps its address for a
+  different reason: the name is hashed from the `sessionID`, so it is deterministic and
+  no inheritance is involved.
+
 ## v0.13.0 — Phase 4: Address inheritance
 - Fix, found on live data: `agentmesh_fetch` reported `hasMore: false` while the recipient's own
   claim was still on disk, so a model that trusted it stopped paging and the message waited for the
@@ -12,7 +26,9 @@
 - A heartbeat that comes back **missing** is no longer treated as a fence. The two mean opposite things, and reading them alike made a session go dark while its inbox kept filling: a sweep that reaps a record under a session blocked past `presenceReapMs` is not a takeover, and the mailbox it addresses outlives the record on purpose. `heartbeat` now distinguishes `ok`/`missing`/`fenced`, and a missing record is written back with the session's own description and metadata — without `force`, so a live session holding the address still wins and the loser stands down as before.
 - Mail in a lost address's mailbox stays there. It is not forwarded to the new address, because that address may itself be claimed later, and moving mail between addresses is how mail ends up read by a stranger.
 - Fix: a claim recovery that declined to take over left the message stranded. Recovery dropped the pending name *before* deciding whether it could take the claim, so declining — a lease still live, or a claim too young to be stale — left a lone `*.json.taken`. That is not a `*.json` file, so no later drain saw a message to lose a claim race against and recovery was never entered again: the message sat in an inbox that looked empty, forever. The pending name is now dropped only in the branches that actually take the claim over. This is the one failure CI caught that the Windows machine could not, and `fail-fast: false` on the test matrix is what made it visible instead of cancelling the other platforms.
-- Inheritance holds for the lifetime of the predecessor's record, which is `presenceReapMs` by default. Recreate a chat later than that and it gets a new name; the old mailbox is reaped like any other.
+- Inheritance holds for the lifetime of the predecessor's record, which is `presenceReapMs` by default. A crash later than that and the next session gets a new name; the old mailbox is reaped like any other.
+- Scope correction, found by testing on a live chat rather than by reasoning: inheritance covers a session that dies **without giving up its address**, which is a crash. Closing a window normally is not that case — `session.deleted` unregisters the record and inheritance enumerates records, so it cannot fire on `Ctrl+C` at all. The window above was documented as if closing a chat recovered the address, and it does not.
+- Known gap, deliberately left visible rather than fixed here: because the mailbox outlives that unregister, `send` keeps accepting a closed chat's address and queues mail that no later session will read — `cleanupOrphanedInboxes` only reaps an *empty* inbox. Closing this means choosing between dropping queued mail and promising a reader that does not exist, which is a decision about what `send` means, not a bug fix.
 
 ## v0.12.0 — Phase 3.5: Adaptive delivery
 - Fix a delivery-correctness bug present since the first release: claiming a message used `fs.rename`, and on Windows two concurrent renames of the same source both succeed, so two delivery paths could each believe they owned one message. Claiming is now `fs.link`, which is exclusive by definition; `EEXIST` is the normal losing outcome, and a crash between link and drop leaves two names on one inode that recovery consolidates. This undercuts the at-most-once guarantee, so it is a correctness fix rather than part of the feature below.
