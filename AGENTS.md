@@ -164,6 +164,15 @@ Correctness rests on facts that are easy to break accidentally:
   and deliberately without `force` — `register` refuses when a live session holds the address, and that
   refusal *is* the fence, which then goes down the fenced path. Collapsing `missing` into `fenced` is
   how a session silently goes dark while its inbox keeps filling.
+- **Address inheritance is only as good as the home it was pointed at, and it fails quietly.** It
+  looks the predecessor up by `routing.directory`, so a probe given its own temp home sees an empty
+  registry, mints a new name, and reports the recreation as fine while the real mailbox sits orphaned.
+  Same trap when a probe builds state under an invented id: the name is hashed from the `sessionID`,
+  so `inbox/soak-claim/` is not where a watcher registered as `concurrent-folder` will look. Take the id
+  from `selfId()` *after* auto-registration, and run the probe against one shared home. And set up claim
+  state before the watcher exists — a running watcher claims the message and delivers it before you can
+  stage the lease, and the test passes without touching the branch you meant to exercise. A refused
+  claim gives that deterministically: fail the first handler call through the `afterClaim` crash hook.
 - **A custom `description`/`metadata` does not outlive the presence record.** After
   `presenceReapMs` of silence (five minutes by default) the record is reaped, and auto-registration
   falls back to the generated description, so an agent that comes back is indistinguishable from a
