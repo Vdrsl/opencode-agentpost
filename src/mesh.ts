@@ -271,6 +271,14 @@ export class Mesh {
     // from that would change too — stranding the mailbox the old address owned.
     // So claim the predecessor's address when there is one to claim, and inherit
     // what it said about itself while we are at it.
+    //
+    // A predecessor past `presenceReapMs` is simply gone, and that is not the
+    // same as mail being lost: the record is reaped but the mailbox is not,
+    // because `cleanupOrphanedInboxes` also demands an empty inbox. So a slow
+    // reopen mints a new name and leaves the letters sitting in the old box,
+    // where they are still readable until `messageRetentionMs`. Nothing here
+    // reports that, which is why it is written down: a new id next to a
+    // non-empty old inbox is the window working as designed, not a lost mailbox.
     const inherited = this.config.id
       ? undefined
       : await this.registry.inheritableAddress(context.directory, context.sessionID)
