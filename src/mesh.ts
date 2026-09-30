@@ -362,7 +362,7 @@ export class Mesh {
   }
 
   /**
-   * Peers, freshest first: alive before stale, then least idle, id as the
+   * Peers, least-idle first: alive before stale, then least idle, id as the
    * tie-break. Ordering is the fix for "every peer looks equally plausible" —
    * the model reads the top of the list first.
    */
