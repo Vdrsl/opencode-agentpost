@@ -23,7 +23,7 @@ Returns your own entry plus everyone else currently on the mesh.`
 const PEERS_DESCRIPTION = `List the agents on the mesh with live state: id, description, metadata, status (alive/stale), lastSeen, idleMs, directory, sessionID.
 Use it to (1) get a valid "to" before ${TOOL_SEND}, (2) check whether a peer is still alive before or after sending, and (3) read peer metadata — project path, stack, role — to decide who a piece of work belongs to.
 A stale peer is not gone: messages queue and are accepted when it returns.
-idleMs is ms since that peer's last session turn: prefer the smallest value that fits the task, and treat an hours-old one as an unattended chat. Peers are returned freshest first.
+idleMs is ms since that peer's last session turn: prefer the smallest value that fits the task, and treat an hours-old one as an unattended chat. Peers are returned least-idle first, alive before stale. lastSeen is a heartbeat and reads the same for every live peer, so it does not order the list.
 sessionID is the opencode chat behind the record: several ids in one directory are several chats, and a closed chat stays alive until its record is reaped but never answers. If a peer accepts a message and stays silent, move on to another peer instead of resending.
 A peer nobody introduced — description exactly "opencode agent working in <directory>" and empty metadata — is a background process that registered itself, not a colleague. Do not delegate to it; choose a peer that described itself.`
 

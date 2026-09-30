@@ -62,11 +62,16 @@ export async function messageFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * A live claim on a message: both names on one inode, holding a lease nobody has
- * given up. Stage it before the watcher exists, because a running one claims the
- * message the moment `enqueue` returns — a test that writes the claim afterwards
- * races the very thing it means to set up, and then passes without touching the
- * branch it was written for.
+ * A live claim on a message: both names present, holding a lease nobody has
+ * given up. Staged as one inode behind two names, the state a crash between
+ * `fs.link` and the drop leaves behind. Stage it before the watcher exists,
+ * because a running one claims the message the moment `enqueue` returns — a test
+ * that writes the claim afterwards races the very thing it means to set up, and
+ * then passes without touching the branch it was written for.
+ *
+ * `expireClaim` rewrites the claim atomically and so breaks that link; after it
+ * the two names are two files. Recovery reads names, not inodes, so tests are
+ * unaffected — but "one inode" is only true before the first `expireClaim`.
  */
 export async function stageLiveClaim(
   inboxDir: string,
