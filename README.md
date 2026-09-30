@@ -103,6 +103,16 @@ its inbox stay put, and two chats in one directory never collide into
 `repo` and `repo-2`. The name is not drawn from a random source — that would
 drift on every restart and orphan the inbox. Set `id` to pin a name yourself.
 
+A description you set yourself does not outlive the presence record. After
+`presenceReapMs` of silence — five minutes by default — the record is reaped,
+and an agent that comes back is auto-registered with the generic description
+`opencode agent working in <directory>` and no metadata. That is deliberate:
+the record is ephemeral, and persisting a description would tie presence to
+identity again, which is exactly what separating them was for. The cost is that
+a returning agent is briefly indistinguishable from a background process that
+never introduced itself, so call `agentmesh_register` once per session when you
+have a role to describe.
+
 ### No daemon, just files
 
 Every agent's plugin instance coordinates through one shared home directory

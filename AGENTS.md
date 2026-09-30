@@ -131,6 +131,14 @@ Correctness rests on facts that are easy to break accidentally:
   purpose: a name that changed on every restart would orphan the peer's inbox and drift the address
   other agents send to. `Registry.pickFree` walks `attempt` past a name a live peer holds; an
   explicit `config.id` bypasses naming entirely (`Mesh.autoRegister` → `allocateId`).
+- **A custom `description`/`metadata` does not outlive the presence record.** After
+  `presenceReapMs` of silence (five minutes by default) the record is reaped, and auto-registration
+  falls back to the generated description, so an agent that comes back is indistinguishable from a
+  background process that never introduced itself. This is deliberate: the record is ephemeral by
+  design, and persisting the description would glue back together what Phase 1 separated. The fix
+  is one `agentmesh_register` call, so `prompt.ts` tells the model to make it when it has a role and
+  sees the default description. If it proves to bite in practice, it belongs with identity in
+  Phase 4, not as a one-off here.
 - **One plugin instance can host several sessions** (multiple opencode sessions in one directory).
   `Mesh` keeps a `sessionID -> {id, routing, watcher}` map, one watcher per session, one shared
   heartbeat/reap timer. Nothing may assume a single agent per process.

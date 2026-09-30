@@ -12,10 +12,14 @@ export function systemPrompt(options: {
   selfId?: string
   maxTextLength: number
   maxReplyDepth: number
+  presenceReapMs: number
 }): string {
   const identity = options.selfId
     ? `You are already on the mesh as \`${options.selfId}\`. Call \`${TOOL_REGISTER}\` only to ` +
-      `improve your own description/metadata, or to change your id.`
+      `improve your own description/metadata, or to change your id. Do it once at the start of ` +
+      `a session when you have a role to describe: your record is reaped after ` +
+      `${Math.round(options.presenceReapMs / 60000)} minutes of silence, and a session that comes ` +
+      `back without its own description is indistinguishable from a background process.`
     : `You are not on the mesh yet. Call \`${TOOL_REGISTER}\` before messaging anyone.`
 
   return `# Agent mesh
