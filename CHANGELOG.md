@@ -1,26 +1,21 @@
 # Changelog
 
-## Unreleased
-- Correction to the v0.13.0 entry below, found on live data: it says inheritance means
-  "its mailbox survives a session being closed and reopened". It does not. Closing a
-  session fires `session.deleted` → `unregisterSession` → `Registry.unregister`, which
-  deletes the record, and inheritance enumerates records — so there is no candidate and
-  the predicate is never consulted. Verified live on 0.13.0: after killing the process
-  `agents/<id>.json` was gone, and returned only when the next session auto-registered.
-  Inheritance covers a predecessor that died *without giving up its address* — a crash,
-  not a close. A record also holds `process.pid`, the opencode process, so two live
-  chats in one process can never take each other's address. The behaviour is unchanged;
-  only the claim about it was wrong. Reopening the *same* chat keeps its address for a
-  different reason: the name is hashed from the `sessionID`, so it is deterministic and
-  no inheritance is involved.
-
 ## v0.13.0 — Phase 4: Address inheritance
 - Fix, found on live data: `agentmesh_fetch` reported `hasMore: false` while the recipient's own
   claim was still on disk, so a model that trusted it stopped paging and the message waited for the
   next notification. A `.json.taken` is unread mail that `listJsonFiles` cannot see. Counting every
   claim is not the fix either — a claim another watcher holds is being injected into that session and
   is not ours to fetch, so counting it pages forever. Ownership is the discriminator.
-- A recreated chat in the same directory inherits its predecessor's address instead of minting a new name, so its mailbox survives a session being closed and reopened. The name is still hashed from the `sessionID`; what changed is that a fresh session now claims the address the dead one left behind, along with the description and metadata it was using.
+- A fresh session in the same directory claims the address a predecessor left behind, so its mailbox
+  survives, along with the description and metadata it was using. The name is still hashed from the
+  `sessionID`. The predecessor must have died *without giving up its address* — a crash, not a close:
+  `session.deleted` runs `Registry.unregister`, which removes the record, and inheritance enumerates
+  records, so a clean close offers no candidate and the mailbox is left with nothing that can address
+  it. A record also holds `process.pid` — the opencode process, shared by every session it hosts — so
+  two live chats in one process can never take each other's address. Verified live on 0.13.0: after
+  killing the process `agents/<id>.json` was gone and came back only when the next session
+  auto-registered. Reopening the *same* chat keeps its address regardless, but for a different reason:
+  the name is a hash of the `sessionID`, so it is deterministic and no inheritance is involved.
 - A record is handed out only when its owner is genuinely gone: `takeable` is `!pidAlive(pid) || ageMs(recordMtime) >= presenceReapMs`, deliberately not `status`. A hung process keeps heartbeating and looks alive for the whole reap window, and reusing `status` would have added `staleAfterMs` on top. `pickFree` uses the same criterion, so both paths that hand out an address agree.
 - A fenced heartbeat now stops the watcher instead of only logging. A session that lost its address stands down rather than delivering into a mailbox another session now owns. The window between the record changing hands and the loser's next heartbeat is a documented limit, not a silent one: the record is a plain atomic rewrite, last write wins, and an `fs.link` claim is the possible later hardening.
 - A heartbeat that comes back **missing** is no longer treated as a fence. The two mean opposite things, and reading them alike made a session go dark while its inbox kept filling: a sweep that reaps a record under a session blocked past `presenceReapMs` is not a takeover, and the mailbox it addresses outlives the record on purpose. `heartbeat` now distinguishes `ok`/`missing`/`fenced`, and a missing record is written back with the session's own description and metadata — without `force`, so a live session holding the address still wins and the loser stands down as before.
