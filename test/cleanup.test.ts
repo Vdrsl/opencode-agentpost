@@ -92,6 +92,14 @@ describe("cleanup", () => {
     assert.equal(await exists(inbox), true)
   })
 
+  // The gate here is emptiness, not age: the directory is backdated past
+  // queueRetentionMs on purpose, so a survivor proves the emptiness check ran.
+  // What this does not prove is the other half of the promise AGENTS.md and the
+  // README make — letters die by their own mtime ("drops expired messages from
+  // inbox, dead and quarantine", below), and since `cleanupOrphanedInboxes`
+  // runs before `cleanupExpiredMessages` in `Mesh.tick`, an orphan holding
+  // nothing but expired letters is emptied by one and reaped by the next. Two
+  // sweeps, by ordering, not by accident.
   it("keeps a non-empty inbox of a gone agent, queued work is not garbage", async () => {
     const { config, registry } = await newRegistry({ queueRetentionMs: 1_000 })
     const inbox = path.join(config.inboxDir, "gone")
