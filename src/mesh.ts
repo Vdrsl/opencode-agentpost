@@ -91,7 +91,7 @@ export class Mesh {
     this.registry = new Registry(config, this.deps.logger)
   }
 
-  // ------------------------------------------------------------- lifecycle
+  // ### lifecycle
 
   private startTimer(): void {
     if (this.timer) return
@@ -157,7 +157,7 @@ export class Mesh {
     for (const [sessionID] of this.agents) await this.unregisterSession(sessionID)
   }
 
-  // -------------------------------------------------------------- registry
+  // ### registry
 
   isRegistered(sessionID: string): boolean {
     return this.agents.has(sessionID)
@@ -393,7 +393,7 @@ export class Mesh {
     await this.registry.touchActivity(id)
   }
 
-  // -------------------------------------------------------------- messaging
+  // ### messaging
 
   /**
    * The depth we injected a message at. It comes from our own processed marker,
