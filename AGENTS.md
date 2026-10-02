@@ -258,8 +258,14 @@ Correctness rests on facts that are easy to break accidentally:
 - `test/crash-matrix.test.ts` owns crash-hook state assertions; `test/security.test.ts` owns ID,
   acknowledgement, storage, envelope, and recipient-boundary regressions.
 - Tests are wall-clock sensitive: helpers force `pollIntervalMs: 50`, and cases override
-  `ackWaitMs`/`maxTextLength` via `twoAgents({ … })`. The burst-ordering test takes ~1s by design;
-  the suite is ~2s total. Don't add sleeps; use `waitFor` from `test/helpers.ts`.
+  `ackWaitMs`/`maxTextLength` via `twoAgents({ … })`. Don't add sleeps; use `waitFor` from
+  `test/helpers.ts`. A lease shorter than a second is not a margin, it is a race waiting for a
+  loaded machine — `crash-matrix` C9 failed intermittently on a 100ms lease and passed alone,
+  because other opencode sessions were saturating the CPU.
+- **`npm test` runs the files sequentially (`--test-concurrency=1`)**, which costs ~4.5s of the ~11s
+  suite. That is the price of a green run meaning something: in parallel, the same load-dependent
+  failures appear in whichever file lost the race first, so a green run under load was luck rather
+  than evidence. Add concurrency back only together with per-test timing headroom.
 
 ## Security and limitations
 

@@ -26,7 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types \"test/*.test.ts\"",
+    "test": "node --test --experimental-strip-types --test-concurrency=1 \"test/*.test.ts\"",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
