@@ -2,27 +2,24 @@
 
 [![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentpost.svg)](https://github.com/Vdrsl/opencode-agentpost/blob/main/LICENSE)
 
-Peer-to-peer messaging between [opencode](https://opencode.ai) agents running in
-different sessions, directories, or even different servers.
-
-It's a plugin, not an MCP server, not an app. There is **no daemon, no port, and
-no config server** to run — coordination happens entirely through a shared
-directory on disk. Install it, and any two opencode sessions that load it can
-discover each other and exchange messages, whether they're two terminals on
-your laptop or two sessions on different machines pointed at the same shared
-folder.
+Agents that run in separate [opencode](https://opencode.ai) sessions can find each
+other and talk, as long as those sessions can see one shared directory. There is
+nothing to launch: no daemon, no port, no broker to keep alive. Each session
+writes its own presence record and watches its own inbox, and messages travel
+as files. Two terminals on the same laptop work; two machines pointed at a
+synced folder work the same way.
 
 ## Why
 
-If you run multiple opencode sessions side by side — one per repo, one per
-service, one for planning and others for implementation — they have no way to
-coordinate. `@vdrsl/opencode-agentpost` gives each session three tools so they can
-find each other and talk, without you copy-pasting between terminals.
+Side-by-side sessions — one per repo, one per service, one for planning and the
+rest for implementation — otherwise have no channel between them, so the only
+option is copying text by hand. This plugin gives every session the same small
+set of tools, and the sessions handle the rest themselves.
 
 ## Install
 
-Add it to your `opencode.json` (global `~/.config/opencode/opencode.json` or
-per-project):
+List it in `opencode.json`, either the global
+`~/.config/opencode/opencode.json` or a per-project one:
 
 ```json
 {
@@ -49,9 +46,9 @@ a plugin whose default export is an object. There is nothing to choose and
 nothing to configure differently: the same package, the same tools, the same
 protocol.
 
-opencode installs npm plugins automatically at startup — there is nothing to
-`npm install` yourself. To pin a fixed agent id or tune the defaults, use the
-tuple form:
+There is no `npm install` step: opencode resolves and installs listed plugins by
+itself when the server starts. To pin an id or change a default, pass a tuple
+instead of a string:
 
 ```json
 {
@@ -117,8 +114,8 @@ review src/auth.ts please
 (end of agentpost message; to reply, call agentpost_send with to "planner")
 ```
 
-That's what shows up as a new turn in the recipient's session — no polling,
-no manual relay.
+The recipient sees the text as an ordinary turn in its own session — nothing to
+poll, nothing to relay by hand.
 
 ### Names
 
@@ -179,13 +176,14 @@ Every agent's plugin instance coordinates through one shared home directory
 <home>/outbox/<msgid>.json     the sender's own copy: state of one sent message
 ```
 
-Each agent only ever writes its own record and its own acks, and a sender only
-ever writes into the recipient's inbox — so there is nothing to lock. After a
-successful injection, the recipient records a local `processed/<msgid>.json`
-marker; a restart can use it to avoid re-injecting an orphaned claim. This is
-local replay suppression, not exactly-once delivery. Liveness is a heartbeat
-(file mtime) plus a process check, so a killed opencode shows up as stale
-immediately rather than lingering.
+Ownership does the work a lock would otherwise do: an agent writes only the
+record that belongs to it and the acknowledgements it owes, and a sender writes
+exclusively into the recipient's inbox. No two writers ever target the same file,
+so no coordination primitive is needed. After a successful injection the
+recipient records a local `processed/<msgid>.json` marker; a restart can use it to
+avoid re-injecting an orphaned claim. This is local replay suppression, not
+exactly-once delivery. Liveness is a heartbeat (file mtime) plus a process check,
+so a killed opencode shows up as stale immediately rather than lingering.
 
 The inbox is the recipient's copy and an ack lives only for `ackRetentionMs`, so
 the sender keeps its own `<home>/outbox/<msgid>.json` entry instead of forgetting
@@ -232,13 +230,14 @@ An agent whose opencode has been sitting in a chat nobody opened for two days
 stays `alive`, but its `idleMs` grows, so a model can tell it apart from the
 session someone is actually working in.
 
-If your agents run on different machines, point `AGENTPOST_HOME` (see below)
-at a directory synced or shared between them (e.g. a network mount).
+Across machines, set `AGENTPOST_HOME` (below) to a directory both sides can
+reach — a network mount, or anything else synced between hosts.
 
 ## Configuration
 
-Options can be passed via the plugin tuple, and every one has an environment
-variable that overrides it (env > plugin options > defaults):
+Every option below can be set in the plugin tuple, and each one has an
+environment variable that takes precedence over the tuple, which in turn takes
+precedence over the built-in default:
 
 | Plugin option         | Env var                           | Default                                                                    | Description                                                                          |
 |-----------------------|-----------------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
@@ -319,18 +318,17 @@ outcomes must not be blindly resent.
 
 ## Requirements
 
-- opencode
-- Node.js >= 22 (only matters if you're developing the plugin itself; end
-  users just add it to `opencode.json`)
+You need opencode, and Node 22 or newer only if you intend to work on the plugin
+itself — installing it as a user is just the one line above.
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck   # tsc --noEmit
-npm test            # node --test on test/*.test.ts
-npm run build        # emits dist/
-npm pack --dry-run  # verifies the published file set
+npm run typecheck    # tsc, no emit
+npm test             # node --test across test/*.test.ts
+npm run build        # writes dist/
+npm pack --dry-run   # shows exactly what would be published
 ```
 
 See [AGENTS.md](./AGENTS.md) for architecture notes and conventions if you're
