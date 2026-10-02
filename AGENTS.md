@@ -235,7 +235,8 @@ Correctness rests on facts that are easy to break accidentally:
 - Session identity (`sessionID`, `directory`, `worktree`, `serverUrl`) always comes from the tool
   context / plugin input — never ask the model for it (`src/tools.ts` header explains why).
 - The opencode SDK reports transport failures in `result.error` rather than throwing
-  (`ThrowOnError = false` by default). `src/index.ts:39-41` checks it manually; do the same for any
+  (`ThrowOnError = false` by default). The `inject` handler in `src/index.ts` checks it
+  manually (`errorTag`); do the same for any
   new SDK call.
 - `src/prompt.ts` and the tool descriptions in `src/tools.ts` are injected into other models'
   prompts. They are behavioural spec, not comments — edit them with the same care as code.

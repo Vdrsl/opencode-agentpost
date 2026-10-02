@@ -42,7 +42,7 @@ reserved for genuine hash collisions. `src/names.ts` keeps its current role.
 One extra step at auto-registration, before any name is generated:
 
 1. List the registry records whose `routing.directory` equals this session's
-   directory. The field already exists (`src/registry.ts:128`), so this is a
+   directory. The field already exists on every `AgentRecord`, so this is a
    filter, not new storage.
 2. Keep the ones that are *effectively dead* (criterion below).
 3. If any remain, take the address of the most recently touched one
@@ -70,7 +70,7 @@ takeable = !pidAlive(pid) || ageMs(recordMtime, now) >= presenceReapMs
   not cost the mailbox (closes the "quick recreate" question).
 - A reused pid: the foreign process sends no heartbeat, so `presenceReapMs`
   reclaims the address anyway. The window is bounded, not eternal.
-- This aligns with `reap` (`src/registry.ts:269`), which drops records on the same
+- This aligns with `Registry.reap`, which drops records on the same
   `presenceReapMs`, so the record and the address go together.
 
 **Every path that hands over somebody else's address uses `takeable`, not
@@ -142,12 +142,12 @@ address that is about to be freed. The mail returns when the address does.
 "closed by the `takeable` predicate: a closed window leaves a dead pid, so the
 address is inherited immediately". Both halves are wrong in the shipped code.
 
-A closed window does not leave a dead pid: the record stores `process.pid`
-(`registry.ts:198`), which is the opencode *process*, shared by every session it
-hosts. And a close does not even reach `takeable` — `session.deleted`
-(`index.ts:137`) runs `unregisterSession` → `Registry.unregister`, which removes
-the record outright (`registry.ts:233`). `inheritableAddress` enumerates records,
-so with no record there is no candidate, and the predicate is never consulted.
+A closed window does not leave a dead pid: the record stores the opencode process
+pid, which is the *process*, shared by every session it hosts. And a close does
+not even reach `takeable` — the `session.deleted` event in `src/index.ts` runs
+`unregisterSession` → `Registry.unregister`, which removes the record outright.
+`Registry.inheritableAddress` enumerates records, so with no record there is no
+candidate, and the predicate is never consulted.
 
 What survives a close is the `pid`; what does not is the record. So quick
 recreate only works when the predecessor dies *without* giving up its address —
