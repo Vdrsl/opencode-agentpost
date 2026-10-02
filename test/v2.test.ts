@@ -16,7 +16,7 @@ import { TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } fro
  * on `get` rather than quietly answering.
  */
 function fakeContext(home: string, calls: string[]) {
-  const added: { name: string; description: string; input: Record<string, unknown> }[] = []
+  const added: { name: string; description: string; input: Record<string, unknown>; output?: { type: string } }[] = []
   const hooks = new Map<string, (event: never) => unknown>()
   const prompts: unknown[] = []
   const controller = new AbortController()
@@ -52,7 +52,7 @@ function fakeContext(home: string, calls: string[]) {
       location: { directory: "I:\\test\\opencode-agentpost" },
       options: { home },
       tool: {
-        transform(callback: (editor: { add(tool: { name: string; description: string; input: Record<string, unknown> }): void }) => void) {
+        transform(callback: (editor: { add(tool: { name: string; description: string; input: Record<string, unknown>; output?: { type: string } }): void }) => void) {
           callback({ add: (tool) => added.push(tool) })
           return Promise.resolve({ dispose: () => Promise.resolve() })
         },
@@ -95,6 +95,10 @@ describe("OpenCode V2 surface", () => {
       assert.equal(tool.input.type, "object")
       assert.equal(tool.input.additionalProperties, false)
       assert.ok(tool.description.length > 0)
+      // v2 rejects a result that declares `output` without a schema, and only
+      // at call time: the plugin registers fine and then every tool call fails.
+      // Found on a real v2.0.22, not guessed — hence the assertion.
+      assert.equal(tool.output?.type, "string")
     }
   })
 

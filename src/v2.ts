@@ -67,10 +67,23 @@ type V2JsonSchema = {
   additionalProperties: false
 }
 
+/**
+ * Every tool here returns its payload as pretty-printed JSON text, so one schema
+ * covers all five. It is not optional in practice: v2 rejects a result that
+ * declares `output` without a matching schema ("Tool result declared output
+ * without an output schema"), and it does so at call time, not at registration —
+ * so the plugin loads cleanly and then every single tool call fails.
+ */
+const JSON_TEXT: { type: "string"; description: string } = {
+  type: "string",
+  description: "The result, pretty-printed JSON.",
+}
+
 type V2ToolDefinition = {
   name: string
   description: string
   input: V2JsonSchema
+  output: { type: "string"; description: string }
   // `any` in exactly one place, on purpose: each tool narrows its own input to
   // the shape it declares, and the alternative is a cast on every one of them.
   execute: (input: any, context: V2ToolContext) => Promise<V2ToolResult>
@@ -145,6 +158,7 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
     {
       name: TOOL_REGISTER,
       description: REGISTER_DESCRIPTION,
+      output: JSON_TEXT,
       input: {
         type: "object",
         properties: {
@@ -179,6 +193,7 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
     {
       name: TOOL_PEERS,
       description: PEERS_DESCRIPTION,
+      output: JSON_TEXT,
       input: {
         type: "object",
         properties: {
@@ -207,6 +222,7 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
     {
       name: TOOL_SEND,
       description: SEND_DESCRIPTION,
+      output: JSON_TEXT,
       input: {
         type: "object",
         properties: {
@@ -249,6 +265,7 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
     {
       name: TOOL_DELIVERIES,
       description: DELIVERIES_DESCRIPTION,
+      output: JSON_TEXT,
       input: {
         type: "object",
         properties: {
@@ -291,6 +308,7 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
     {
       name: TOOL_FETCH,
       description: FETCH_DESCRIPTION,
+      output: JSON_TEXT,
       input: {
         type: "object",
         properties: {
