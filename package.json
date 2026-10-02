@@ -7,11 +7,11 @@
   "author": "Vdrsl",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Vdrsl/opencode-agentpost-private.git"
+    "url": "git+https://github.com/Vdrsl/opencode-agentpost.git"
   },
-  "homepage": "https://github.com/Vdrsl/opencode-agentpost-private#readme",
+  "homepage": "https://github.com/Vdrsl/opencode-agentpost#readme",
   "bugs": {
-    "url": "https://github.com/Vdrsl/opencode-agentpost-private/issues"
+    "url": "https://github.com/Vdrsl/opencode-agentpost/issues"
   },
   "type": "module",
   "main": "./dist/index.js",

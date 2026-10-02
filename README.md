@@ -1,6 +1,6 @@
 # @vdrsl/opencode-agentpost
 
-[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentpost.svg)](https://github.com/Vdrsl/opencode-agentpost-private/blob/main/LICENSE)
+[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentpost.svg)](https://github.com/Vdrsl/opencode-agentpost/blob/main/LICENSE)
 
 Peer-to-peer messaging between [opencode](https://opencode.ai) agents running in
 different sessions, directories, or even different servers.
