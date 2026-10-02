@@ -245,7 +245,33 @@ Correctness rests on facts that are easy to break accidentally:
 - Config precedence: `AGENTPOST_*` env > plugin options > defaults (`resolveConfig`, `src/config.ts`).
 - Structured logging is opt-in with `AGENTPOST_LOG_LEVEL=off|info|debug`; output is JSON lines with fixed events and allowlisted numeric/boolean fields. `AGENTPOST_DEBUG=1` is a deprecated info fallback.
 - Installed by users as `{ "plugin": ["@vdrsl/opencode-agentpost"] }`, or with options as
-  `{ "plugin": [["@vdrsl/opencode-agentpost", { "id": "…" }]] }`.
+  `{ "plugin": [["@vdrsl/opencode-agentpost", { "id": "…" }]] }`. On OpenCode 2 the key is
+  `plugins` and the options form is `{ "package": "…", "options": { … } }`.
+
+## One package, two opencode runtimes
+
+The default export of `src/index.ts` is an object carrying both entrypoints: V1 calls
+`server()` (the original plugin function, still exported as `AgentPost`), V2 calls `setup()`
+from `src/v2.ts`. That is OpenCode's documented dual form and it needs 1.18.29+ on the V1
+side. Do not "simplify" it back to a bare function: V2 would then load a package that does
+nothing, and nothing would say so.
+
+The split is one file, `src/v2.ts`, and it is thin on purpose. `Mesh`, the registry, the
+watcher and the store never learn which runtime they run under; only the wiring differs.
+
+Three v2 facts shape that file, all from the same cause — v2 owns the queue:
+
+- **Never detect busy under V2.** V1 asked `session.status` and deferred the message itself
+  (`maxBusyDefers`). V2 dropped that API and made the choice part of the request, so delivery
+  is `session.prompt({ delivery: "queue" })` and nothing else. A `session.status` call in
+  `src/v2.ts` is a regression, and `test/v2.test.ts` fails on it by design: its fake context
+  throws on any method the adapter does not need.
+- **V2 throws, V1 returns `{ error }`.** The `errorTag()` helper in `src/index.ts` has no
+  meaning under V2 and must not be copied there.
+- **`accepted` under V2 = admitted to that session's durable queue.** Not "the model read it",
+  not even "the session went idle". Documented in README and `src/descriptions.ts`, which is
+  the single source of both runtimes' tool text — the model reads those descriptions as
+  instructions, so they must not be allowed to drift between V1 and V2.
 
 ## Testing notes
 

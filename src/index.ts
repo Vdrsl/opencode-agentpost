@@ -1,12 +1,18 @@
 /**
  * opencode-agentpost — peer-to-peer messaging between opencode agents.
  *
- * Install by adding the package to `plugin` in `~/.config/opencode/opencode.json`:
+ * Install by adding the package to `plugin` in `~/.config/opencode/opencode.json`
+ * on OpenCode 1, or to `plugins` on OpenCode 2:
  *
- *     { "plugin": ["@vdrsl/opencode-agentpost"] }
+ *     { "plugin":  ["@vdrsl/opencode-agentpost"] }
+ *     { "plugins": ["@vdrsl/opencode-agentpost"] }
  *
  * Every opencode session that loads it registers itself, watches its own inbox
- * and gains three tools. There is no daemon, no port and no per-agent config.
+ * and gains five tools. There is no daemon, no port and no per-agent config.
+ *
+ * The default export below serves both runtimes from one package: V1 calls
+ * `server()`, V2 calls `setup()`, and each opencode picks the one it knows.
+ * `src/v2.ts` holds the V2 wiring; everything the mesh itself does is shared.
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -17,6 +23,7 @@ import { Mesh } from "./mesh.ts"
 import { systemPrompt } from "./prompt.ts"
 import { PromptTimeoutError, SessionBusyError, SessionNotFoundError } from "./types.ts"
 import { buildTools } from "./tools.ts"
+import { v2Plugin } from "./v2.ts"
 
 export type { MeshOptions } from "./config.ts"
 export type { AgentRecord, MeshMessage, PeerView } from "./types.ts"
@@ -144,4 +151,13 @@ export const AgentPost: Plugin = async (input, options) => {
   }
 }
 
-export default AgentPost
+/**
+ * One package, both runtimes. V1 reads `server` and gets the function above;
+ * V2 reads `id` and `setup` and gets `src/v2.ts`. The object form needs OpenCode
+ * 1.18.29 or newer on the V1 side, which is older than any release this package
+ * has been published to, so no V1 user is stranded on the old shape.
+ */
+export default {
+  ...v2Plugin,
+  server: AgentPost,
+}

@@ -33,6 +33,22 @@ per-project):
 }
 ```
 
+On OpenCode 2 the key is `plugins` — one package serves both runtimes:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    "@vdrsl/opencode-agentpost"
+  ]
+}
+```
+
+On OpenCode 1 you need 1.18.29 or newer, which is the first release that accepts
+a plugin whose default export is an object. There is nothing to choose and
+nothing to configure differently: the same package, the same tools, the same
+protocol.
+
 opencode installs npm plugins automatically at startup — there is nothing to
 `npm install` yourself. To pin a fixed agent id or tune the defaults, use the
 tuple form:
@@ -70,12 +86,17 @@ plugin watches it, claims it with a lease, retries failed injection up to
 deferred separately; past `maxBusyDefers` the sender is told the outcome is
 `ambiguous`, but the message stays in the inbox and is injected when the session
 goes idle. Prompt timeouts are `ambiguous` and are not retried.
-`agentpost_send` returns `accepted` after the
-recipient's OpenCode accepts the asynchronous prompt; that does not mean the peer
-read the message or answered. `queued` means the durable inbox write exists but
+`agentpost_send` returns `accepted` once the recipient's OpenCode has admitted the
+message into that session; that does not mean the peer read the message or
+answered. `queued` means the durable inbox write exists but
 no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
 reported a terminal injection error; `ambiguous` means the delivery outcome is
 not known and the caller must not blindly resend.
+
+On OpenCode 2 `accepted` means exactly one thing: the message is in the durable
+queue of that session. The recipient's OpenCode decides when to run it, and this
+plugin never asks whether the session is busy — that queue is the runtime's, not
+ours. `queued`, `failed`, `ambiguous` and `undeliverable` keep their meanings.
 
 A record is the whole of addressability. An id is accepted as long as its
 `agents/<id>.json` record exists; nothing else qualifies, not even an `inbox/<id>/`
