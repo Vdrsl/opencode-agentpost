@@ -11,17 +11,17 @@ import { writeJsonAtomic } from "../src/store.ts"
 
 describe("logger and ack retention", () => {
   it("resolves explicit levels and the deprecated debug fallback", () => {
-    assert.equal(resolveLogLevel({ AGENTMESH_LOG_LEVEL: "debug", AGENTMESH_DEBUG: "1" }), "debug")
-    assert.equal(resolveLogLevel({ AGENTMESH_LOG_LEVEL: "off", AGENTMESH_DEBUG: "1" }), "off")
-    assert.equal(resolveLogLevel({ AGENTMESH_LOG_LEVEL: "invalid" }), "off")
-    assert.equal(resolveLogLevel({ AGENTMESH_DEBUG: "yes" }), "info")
+    assert.equal(resolveLogLevel({ AGENTPOST_LOG_LEVEL: "debug", AGENTPOST_DEBUG: "1" }), "debug")
+    assert.equal(resolveLogLevel({ AGENTPOST_LOG_LEVEL: "off", AGENTPOST_DEBUG: "1" }), "off")
+    assert.equal(resolveLogLevel({ AGENTPOST_LOG_LEVEL: "invalid" }), "off")
+    assert.equal(resolveLogLevel({ AGENTPOST_DEBUG: "yes" }), "info")
     assert.equal(resolveLogLevel({}), "off")
   })
 
   it("emits JSON lines with fixed events and safe fields only", () => {
     const lines: string[] = []
     const logger = createLogger({
-      env: { AGENTMESH_LOG_LEVEL: "debug" },
+      env: { AGENTPOST_LOG_LEVEL: "debug" },
       write: (line) => lines.push(line),
     })
     logger("debug", "safe.event", {
@@ -45,14 +45,14 @@ describe("logger and ack retention", () => {
 
   it("honors off and noop logger", () => {
     const lines: string[] = []
-    const logger = createLogger({ env: { AGENTMESH_LOG_LEVEL: "off" }, write: (line) => lines.push(line) })
+    const logger = createLogger({ env: { AGENTPOST_LOG_LEVEL: "off" }, write: (line) => lines.push(line) })
     logger("error", "ignored")
     noopLogger("error", "ignored")
     assert.equal(lines.length, 0)
   })
 
   it("validates ack retention independently from agent expiry", async () => {
-    const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-ack-retention-"))
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-ack-retention-"))
     try {
       assert.equal(resolveConfig({ home }).ackRetentionMs, 300_000)
       assert.throws(

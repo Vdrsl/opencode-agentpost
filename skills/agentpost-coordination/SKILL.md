@@ -1,13 +1,13 @@
 ---
-name: agentmesh-coordination
-description: "This skill should be used when coordinating work between opencode agents via agentmesh — delegating tasks, sending handoffs, requesting or performing code reviews, escalating blockers, or resolving conflicts between agents. Trigger phrases include 'delegate to', 'handoff', 'review request', 'escalate', 'coordinate with', 'ask the other agent', 'who owns', 'inter-agent workflow'."
+name: agentpost-coordination
+description: "This skill should be used when coordinating work between opencode agents via agentpost — delegating tasks, sending handoffs, requesting or performing code reviews, escalating blockers, or resolving conflicts between agents. Trigger phrases include 'delegate to', 'handoff', 'review request', 'escalate', 'coordinate with', 'ask the other agent', 'who owns', 'inter-agent workflow'."
 ---
 
 # Agent Mesh Coordination
 
 Rules for **when** and **how** to coordinate between opencode agents.
 The transport protocol (registration, sending, delivery statuses) is injected
-by the agentmesh plugin. This skill covers coordination decisions only.
+by the agentpost plugin. This skill covers coordination decisions only.
 
 This is a peer-coordination policy, not an orchestrator. It does not manage
 task queues, assign work, track progress, or supervise agents. Each agent
@@ -186,7 +186,7 @@ If your message and a peer's message contradict each other:
 | Anti-pattern | Do instead |
 |-------------|------------|
 | Sending "ok" / "understood" / "will do" | Do not reply if you have nothing to add |
-| Sending same message twice within 5 min | Wait; check `agentmesh_peers`; escalate if urgent |
+| Sending same message twice within 5 min | Wait; check `agentpost_peers`; escalate if urgent |
 | Treating `accepted` as task completion | Wait for peer's reply confirming the result |
 | Pasting file contents in messages | Reference absolute paths |
 | Including secrets/tokens/keys | Reference env var names or vault paths |
@@ -201,7 +201,7 @@ If your message and a peer's message contradict each other:
 
 Before sending a **delegation or review request**:
 
-- [ ] Called `agentmesh_peers` and confirmed target exists
+- [ ] Called `agentpost_peers` and confirmed target exists
 - [ ] Message is self-contained with absolute paths and acceptance criteria
 - [ ] No secrets or file contents in text
 - [ ] `context` set to a task slug

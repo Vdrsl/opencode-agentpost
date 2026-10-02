@@ -1,7 +1,7 @@
 # Agent Mesh Message Templates
 
 Ready-made templates for common coordination patterns. Copy, fill placeholders,
-and send via `agentmesh_send`.
+and send via `agentpost_send`.
 
 Task slug: a short lowercase descriptor you create yourself, e.g.
 `auth-rate-limit`, `review-token-validation`, `fix-ci-timeout`.
@@ -10,7 +10,7 @@ Use it in the `context` field. Do NOT use numeric IDs like T-001.
 ## Task Delegation
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<peer-id>",
   text: "Task: <one-line deliverable>\n\nFiles:\n- <absolute/path/to/file1.ts>\n- <absolute/path/to/dir/>\n\nWhy: <one sentence>\n\nContract:\n- <constraint 1>\n- <constraint 2>\n\nDone means: <acceptance criteria>\n\nReply with the result when done.",
   context: "<task-slug>"
@@ -20,7 +20,7 @@ agentmesh_send(
 ## Review Request
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<reviewer-id>",
   text: "Review request.\n\nChanged files:\n- <path> (lines <start>-<end>): <what changed>\n- <path> (lines <start>-<end>): <what changed>\n\nWhy: <reason for change>\n\nContract to check against:\n- <requirement 1>\n- <requirement 2>\n\nPlease review and reply with APPROVE, REQUEST_CHANGES, or NEED_CONTEXT.",
   context: "review-<task-slug>"
@@ -30,7 +30,7 @@ agentmesh_send(
 ## Review Response — Approve
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<requester-id>",
   text: "APPROVE\n\nReviewed: <file list>\nNo blocking issues against the stated contract.",
   context: "review-<task-slug>",
@@ -41,7 +41,7 @@ agentmesh_send(
 ## Review Response — Request Changes
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<requester-id>",
   text: "REQUEST_CHANGES\n\n1. <file>, lines <range>: <issue>. Suggested fix: <fix>.\n2. <file>, lines <range>: <issue>. Suggested fix: <fix>.\n\nRe-request review after addressing.",
   context: "review-<task-slug>",
@@ -52,7 +52,7 @@ agentmesh_send(
 ## Blocker Notification
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<peer-id>",
   text: "BLOCKED on <task-slug>.\n\nI cannot proceed because: <reason>.\nI need from you: <specific ask>.\nMy task is paused until your reply.",
   context: "<task-slug>",
@@ -63,7 +63,7 @@ agentmesh_send(
 ## Status Update (no reply expected)
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<peer-id>",
   text: "Status: <what was done>.\nCommit: <hash or branch>.\nNo reply needed.",
   context: "<task-slug>"
@@ -73,7 +73,7 @@ agentmesh_send(
 ## Declining a Request
 
 ```
-agentmesh_send(
+agentpost_send(
   to: "<peer-id>",
   text: "Cannot take that on: <brief reason>.\nSuggested alternative: <who or what>.",
   context: "<task-slug>",
@@ -83,7 +83,7 @@ agentmesh_send(
 
 ## Escalation to Human
 
-This is NOT sent via agentmesh. Write directly in your session:
+This is NOT sent via agentpost. Write directly in your session:
 
 ```
 ESCALATION

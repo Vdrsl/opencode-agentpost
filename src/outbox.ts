@@ -77,7 +77,7 @@ export async function listOutboxEntries(config: MeshConfig): Promise<OutboxEntry
   return entries
 }
 
-/** Our own outbox, newest first, for `agentmesh_deliveries`. */
+/** Our own outbox, newest first, for `agentpost_deliveries`. */
 export async function getDeliveries(
   config: MeshConfig,
   from: string,

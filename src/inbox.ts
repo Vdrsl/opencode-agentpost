@@ -299,7 +299,7 @@ export type InboxHandler = (message: MeshMessage) => Promise<void>
 
 /**
  * The batch wake-up, told how many messages are waiting. It is a turn of its
- * own and carries no body: the model answers it with `agentmesh_fetch`, so a
+ * own and carries no body: the model answers it with `agentpost_fetch`, so a
  * pile of letters costs one turn instead of one turn each.
  */
 export type BatchNotifier = (count: number) => Promise<void>
@@ -524,7 +524,7 @@ export class InboxWatcher {
    * never announced. Claim first, then look at the claims.
    *
    * One claim means the fast path: the body is injected, exactly as before
-   * Phase 3.5, and `agentmesh_fetch` never sees it. Two or more means one
+   * Phase 3.5, and `agentpost_fetch` never sees it. Two or more means one
    * notification instead of N body-injects, and the claims go straight back so
    * the fetch can take them.
    */

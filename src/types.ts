@@ -38,7 +38,7 @@ export type AgentRecord = {
 
 export type AgentStatus = "alive" | "stale"
 
-/** What peers see through `agentmesh_peers` / `agentmesh_register`. */
+/** What peers see through `agentpost_peers` / `agentpost_register`. */
 export type PeerView = {
   id: string
   description: string

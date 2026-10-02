@@ -56,7 +56,7 @@ async function fixture(overrides: Record<string, unknown> = {}): Promise<{
   processed: (id: string) => string
   ack: (id: string) => string
 }> {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-crash-"))
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-crash-"))
   const config = testConfig(home, { leaseDurationMs: 5, pollIntervalMs: 10, ...overrides })
   const inbox = path.join(config.inboxDir, "reviewer")
   await fs.mkdir(inbox, { recursive: true })

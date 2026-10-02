@@ -1,9 +1,9 @@
 /**
- * opencode-agentmesh — peer-to-peer messaging between opencode agents.
+ * opencode-agentpost — peer-to-peer messaging between opencode agents.
  *
  * Install by adding the package to `plugin` in `~/.config/opencode/opencode.json`:
  *
- *     { "plugin": ["opencode-agentmesh"] }
+ *     { "plugin": ["@vdrsl/opencode-agentpost"] }
  *
  * Every opencode session that loads it registers itself, watches its own inbox
  * and gains three tools. There is no daemon, no port and no per-agent config.
@@ -21,7 +21,7 @@ import { buildTools } from "./tools.ts"
 export type { MeshOptions } from "./config.ts"
 export type { AgentRecord, MeshMessage, PeerView } from "./types.ts"
 
-export const AgentMesh: Plugin = async (input, options) => {
+export const AgentPost: Plugin = async (input, options) => {
   const config = resolveConfig((options ?? {}) as MeshOptions)
   const serverUrl = input.serverUrl ? input.serverUrl.toString().replace(/\/$/, "") : ""
 
@@ -144,4 +144,4 @@ export const AgentMesh: Plugin = async (input, options) => {
   }
 }
 
-export default AgentMesh
+export default AgentPost

@@ -48,7 +48,7 @@ export type MeshDeps = {
 }
 
 /**
- * What one `agentmesh_fetch` call consumed. `hasMore` is honest but
+ * What one `agentpost_fetch` call consumed. `hasMore` is honest but
  * best-effort: it reports whether messages were still pending when we looked,
  * and the transport is the real guarantee — anything left is either announced
  * again or body-injected by the fallback, never lost.
@@ -300,7 +300,7 @@ export class Mesh {
         reuse?.description ??
         carried?.description ??
         // The project's own role, when it declares one. This is a default, not an
-        // override: an agent that called `agentmesh_register` is registered
+        // override: an agent that called `agentpost_register` is registered
         // already and never reaches this path, so config and agent never contend.
         this.config.description ??
         `opencode agent working in ${context.directory}`,
@@ -429,7 +429,7 @@ export class Mesh {
     if (!from) {
       throw new MeshError(
         ErrorCode.NOT_REGISTERED,
-        "this session is not on the mesh yet; call agentmesh_register first",
+        "this session is not on the mesh yet; call agentpost_register first",
       )
     }
     if (input.to === from) {
@@ -546,7 +546,7 @@ export class Mesh {
   /**
    * The batch wake-up: a turn that carries no message body, only the count and
    * who wrote. It is not a message and gets no `msgid`, no processed marker and
-   * no ack — it exists to make the model call `agentmesh_fetch` once for the
+   * no ack — it exists to make the model call `agentpost_fetch` once for the
    * whole batch instead of paying one full turn per letter.
    */
   private async notify(routing: AgentRouting, count: number): Promise<void> {
@@ -554,7 +554,7 @@ export class Mesh {
       sessionID: routing.sessionID,
       directory: routing.directory,
       text:
-        `[agentmesh] ${count} new message${count === 1 ? "" : "s"} in your inbox. ` +
+        `[agentpost] ${count} new message${count === 1 ? "" : "s"} in your inbox. ` +
         `Call ${TOOL_FETCH} to read them, then continue with your work. ` +
         `Nothing is lost if you do not: they stay queued and arrive as turns ` +
         `on their own.`,
@@ -583,7 +583,7 @@ export class Mesh {
   }
 
   /**
-   * What one `agentmesh_fetch` call takes, in one turn. `hasMore` is honest but
+   * What one `agentpost_fetch` call takes, in one turn. `hasMore` is honest but
    * best-effort: it reports what was still pending when we looked, and the
    * transport is the real guarantee.
    */

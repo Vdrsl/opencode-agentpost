@@ -25,10 +25,10 @@ export const noopLogger: Logger = () => {}
 export function resolveLogLevel(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): LogSetting {
-  const explicit = env["AGENTMESH_LOG_LEVEL"]?.trim().toLowerCase()
+  const explicit = env["AGENTPOST_LOG_LEVEL"]?.trim().toLowerCase()
   if (explicit === "off" || explicit === "info" || explicit === "debug") return explicit
   if (explicit !== undefined) return "off"
-  const debug = env["AGENTMESH_DEBUG"]?.trim().toLowerCase()
+  const debug = env["AGENTPOST_DEBUG"]?.trim().toLowerCase()
   return debug === "1" || debug === "true" || debug === "yes" || debug === "on" ? "info" : "off"
 }
 

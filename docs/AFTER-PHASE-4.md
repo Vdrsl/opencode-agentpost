@@ -168,7 +168,7 @@ delivery_latency
 Асимметрия, которую надо помнить при чтении этого пункта: закрытый чат адреса
 не имеет, но переоткрытие **того же** чата адрес восстанавливает (имя хешируется
 от `sessionID`), поэтому отказ в очереди — не безвозвратная потеря. Это написано
-в `AGENTS.md`, в `src/prompt.ts` и в описании `agentmesh_send` в `src/tools.ts`.
+в `AGENTS.md`, в `src/prompt.ts` и в описании `agentpost_send` в `src/tools.ts`.
 
 Тombstone остаётся не нужным: новая сущность хранения запрещена до
 появления доказательств, а условие срабатывания задано явно в
@@ -200,7 +200,7 @@ forwarding/bridge.
 - **opencode-agent-hub** (AGPL-3.0, заархивирован 2026-08-30): daemon, SQLite
   polling, coordinator, MCP. Причины архивации (coupling к недокументированным
   internals, быстрый upstream, prompt injection) — валидация текущего
-  filesystem-based дизайна agentmesh.
+  filesystem-based дизайна agentpost.
 - **UDS/TCP transport, TUI command machinery, slash-command routing** (peers):
   filesystem transport — сознательный выбор.
 - **Relay/crypto слой** (agent-talk): пока не нужен. Стратегический запас на случай

@@ -1,6 +1,6 @@
-# @vdrsl/opencode-agentmesh
+# @vdrsl/opencode-agentpost
 
-[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentmesh.svg)](https://github.com/Vdrsl/opencode-agentmesh-private/blob/main/LICENSE)
+[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentpost.svg)](https://github.com/Vdrsl/opencode-agentpost-private/blob/main/LICENSE)
 
 Peer-to-peer messaging between [opencode](https://opencode.ai) agents running in
 different sessions, directories, or even different servers.
@@ -16,7 +16,7 @@ folder.
 
 If you run multiple opencode sessions side by side — one per repo, one per
 service, one for planning and others for implementation — they have no way to
-coordinate. `@vdrsl/opencode-agentmesh` gives each session three tools so they can
+coordinate. `@vdrsl/opencode-agentpost` gives each session three tools so they can
 find each other and talk, without you copy-pasting between terminals.
 
 ## Install
@@ -28,7 +28,7 @@ per-project):
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@vdrsl/opencode-agentmesh"
+    "@vdrsl/opencode-agentpost"
   ]
 }
 ```
@@ -42,7 +42,7 @@ tuple form:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "@vdrsl/opencode-agentmesh",
+      "@vdrsl/opencode-agentpost",
       {
         "id": "api-gateway"
       }
@@ -58,11 +58,11 @@ you send your first message, and gets three tools:
 
 | Tool                 | Purpose                                                                                                                                                    |
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `agentmesh_register` | Publish this agent's id, description, and metadata so peers can find it. Called automatically; call it again to update your description or change your id. |
-| `agentmesh_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, `idleMs` (ms since its last turn), directory. Freshest first. |
-| `agentmesh_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `in_reply_to` with the incoming `msg` id for correlated replies (`reply_to` remains a legacy alias). |
-| `agentmesh_deliveries` | Check what became of the messages you sent: recipient, state (`queued`, `accepted`, `failed`, `ambiguous`, `undeliverable`), timestamp. Newest first, filterable by `to` and `state`. |
-| `agentmesh_fetch`    | Fallback read of your own inbox: messages that were never injected (after a crash, or still held by a busy session). Excludes anything already injected, so nothing is shown twice. |
+| `agentpost_register` | Publish this agent's id, description, and metadata so peers can find it. Called automatically; call it again to update your description or change your id. |
+| `agentpost_peers`    | List every agent on the mesh right now: id, description, metadata, `alive`/`stale` status, last seen, `idleMs` (ms since its last turn), directory. Freshest first. |
+| `agentpost_send`     | Send one message to a peer by id. It's injected into that peer's own opencode session as a new user turn. Use `in_reply_to` with the incoming `msg` id for correlated replies (`reply_to` remains a legacy alias). |
+| `agentpost_deliveries` | Check what became of the messages you sent: recipient, state (`queued`, `accepted`, `failed`, `ambiguous`, `undeliverable`), timestamp. Newest first, filterable by `to` and `state`. |
+| `agentpost_fetch`    | Fallback read of your own inbox: messages that were never injected (after a crash, or still held by a busy session). Excludes anything already injected, so nothing is shown twice. |
 
 A message sent to a peer that's offline stays in the durable inbox. The recipient's
 plugin watches it, claims it with a lease, retries failed injection up to
@@ -70,7 +70,7 @@ plugin watches it, claims it with a lease, retries failed injection up to
 deferred separately; past `maxBusyDefers` the sender is told the outcome is
 `ambiguous`, but the message stays in the inbox and is injected when the session
 goes idle. Prompt timeouts are `ambiguous` and are not retried.
-`agentmesh_send` returns `accepted` after the
+`agentpost_send` returns `accepted` after the
 recipient's OpenCode accepts the asynchronous prompt; that does not mean the peer
 read the message or answered. `queued` means the durable inbox write exists but
 no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
@@ -91,9 +91,9 @@ again, since the name is hashed from the session id, so a peer that returns to t
 chat it left is reachable again under the familiar address.
 
 ```
-[agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…
+[agentpost] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…
 review src/auth.ts please
-(end of agentmesh message; to reply, call agentmesh_send with to "planner")
+(end of agentpost message; to reply, call agentpost_send with to "planner")
 ```
 
 That's what shows up as a new turn in the recipient's session — no polling,
@@ -115,7 +115,7 @@ and an agent that comes back is auto-registered with the generic description
 the record is ephemeral, and persisting a description would tie presence to
 identity again, which is exactly what separating them was for. The cost is that
 a returning agent is briefly indistinguishable from a background process that
-never introduced itself, so call `agentmesh_register` once per session when you
+never introduced itself, so call `agentpost_register` once per session when you
 have a role to describe.
 
 A session that dies **without giving up its address** — a crash, not a closed
@@ -144,7 +144,7 @@ claimed later.
 ### No daemon, just files
 
 Every agent's plugin instance coordinates through one shared home directory
-(default `~/.local/share/opencode-agentmesh`, or `$XDG_DATA_HOME/opencode-agentmesh`):
+(default `~/.local/share/opencode-agentpost`, or `$XDG_DATA_HOME/opencode-agentpost`):
 
 ```
 <home>/agents/<id>.json         one record per agent, written only by its owner
@@ -181,7 +181,7 @@ participant agrees on it without coordinating.
 Mail is pushed, never polled: the recipient's plugin watches its own inbox and
 delivers. One message on its own arrives as a full user turn, and the model just
 works on it. Several at once cost one turn between them — the session gets a
-single notice saying how many are waiting, and the model calls `agentmesh_fetch`
+single notice saying how many are waiting, and the model calls `agentpost_fetch`
 once to take the whole batch. The saving only shows up at three or more, where
 it is one turn instead of N.
 
@@ -195,10 +195,10 @@ a message can only ever reach the model once whether it came from the fetch or
 from the fallback. See `fs.link` in `src/store.ts` for why a rename is not
 enough on Windows.
 
-`agentmesh_deliveries` reports the state of what you sent, so a peer that went
+`agentpost_deliveries` reports the state of what you sent, so a peer that went
 quiet can be told apart from a message that never landed.
 
-One honest edge: a message taken by `agentmesh_fetch` is consumed, and its text
+One honest edge: a message taken by `agentpost_fetch` is consumed, and its text
 lands inside a turn that can be aborted. If the session is interrupted between
 the fetch and the model acting on it, that message is not delivered again. A
 direct inject is stronger here, because its text is already in the session
@@ -211,7 +211,7 @@ An agent whose opencode has been sitting in a chat nobody opened for two days
 stays `alive`, but its `idleMs` grows, so a model can tell it apart from the
 session someone is actually working in.
 
-If your agents run on different machines, point `AGENTMESH_HOME` (see below)
+If your agents run on different machines, point `AGENTPOST_HOME` (see below)
 at a directory synced or shared between them (e.g. a network mount).
 
 ## Configuration
@@ -221,37 +221,37 @@ variable that overrides it (env > plugin options > defaults):
 
 | Plugin option         | Env var                           | Default                                                                    | Description                                                                          |
 |-----------------------|-----------------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `id`                  | `AGENTMESH_ID`                    | an adjective-noun pair hashed from the session id                           | Fixed agent id for this project.                                                     |
-| `home`                | `AGENTMESH_HOME`                  | `$XDG_DATA_HOME/opencode-agentmesh` or `~/.local/share/opencode-agentmesh` | Mesh home directory.                                                                 |
-| `autoRegister`        | `AGENTMESH_AUTO_REGISTER`         | `true`                                                                     | Register automatically on the first user message.                                    |
-| `injectSystemPrompt`  | `AGENTMESH_INJECT_SYSTEM_PROMPT`  | `true`                                                                     | Append the mesh protocol explanation to the system prompt.                           |
-| `heartbeatIntervalMs` | `AGENTMESH_HEARTBEAT_INTERVAL_MS` | `15000`                                                                    | How often a registered agent refreshes its liveness.                                 |
-| `staleAfterMs`        | `AGENTMESH_STALE_AFTER_MS`        | `60000`                                                                    | No heartbeat for this long → agent shows as `stale`.                                 |
-| `presenceReapMs`      | `AGENTMESH_PRESENCE_REAP_MS`      | `300000`                                                                   | No heartbeat for this long → the presence record is dropped, the mailbox stays. Cap 24h. |
-| `messageRetentionMs`  | `AGENTMESH_MESSAGE_RETENTION_MS`  | `86400000`                                                                  | How long an undelivered message is kept in `inbox/`, `dead/` and `quarantine/` before it is dropped. Cap 7d. |
-| `ackWaitMs`           | `AGENTMESH_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentmesh_send` waits for delivery confirmation before returning `queued`. |
-| `ackRetentionMs`      | `AGENTMESH_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
-| `queueRetentionMs`    | `AGENTMESH_QUEUE_RETENTION_MS`    | `300000`                                                                   | How long an empty inbox of a gone agent is kept before deletion.                     |
-| `busyDeferMs`         | `AGENTMESH_BUSY_DEFER_MS`         | `2000`                                                                     | Delay before retrying a busy OpenCode session. A busy peer is a slow peer: the message is never dropped, it waits in the inbox. |
-| `maxBusyDefers`       | `AGENTMESH_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before the sender is told delivery became `ambiguous`. The message itself is never dropped. |
-| `promptTimeoutMs`     | `AGENTMESH_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
-| `pollIntervalMs`      | `AGENTMESH_POLL_INTERVAL_MS`      | `2000`                                                                     | Inbox poll interval, as a fallback for missed filesystem events.                     |
-| `maxTextLength`       | `AGENTMESH_MAX_TEXT_LENGTH`       | `8000`                                                                     | Maximum message body length, in characters.                                          |
-| `leaseDurationMs`     | `AGENTMESH_LEASE_DURATION_MS`     | `60000`                                                                    | Claim lease duration before recovery may retry a message.                            |
-| `maxDeliveryAttempts` | `AGENTMESH_MAX_DELIVERY_ATTEMPTS` | `3`                                                                        | Maximum injection attempts before moving a message to `dead/`.                      |
-| `maxInboxMessages`    | `AGENTMESH_MAX_INBOX_MESSAGES`    | `256`                                                                      | Maximum pending `.json` messages in one inbox.                                       |
-| `maxMessageBytes`     | `AGENTMESH_MAX_MESSAGE_BYTES`     | `32768`                                                                    | Maximum serialized size of one message.                                             |
-| `maxInboxBytes`       | `AGENTMESH_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
-| `maxReplyDepth`       | `AGENTMESH_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
-| `processedRetentionMs` | `AGENTMESH_PROCESSED_RETENTION_MS` | `86400000`                                                                | How long a `processed/<msgid>.json` marker suppresses replay before it is reaped.    |
-| `fetchLimit`           | `AGENTMESH_FETCH_LIMIT`            | `20`                                                                      | Max messages one `agentmesh_fetch` takes, and the batch size that triggers a notice. |
-| `fetchFallbackMs`      | `AGENTMESH_FETCH_FALLBACK_MS`      | `30000`                                                                   | How long an unanswered batch notice waits before the messages arrive as turns.       |
+| `id`                  | `AGENTPOST_ID`                    | an adjective-noun pair hashed from the session id                           | Fixed agent id for this project.                                                     |
+| `home`                | `AGENTPOST_HOME`                  | `$XDG_DATA_HOME/opencode-agentpost` or `~/.local/share/opencode-agentpost` | Mesh home directory.                                                                 |
+| `autoRegister`        | `AGENTPOST_AUTO_REGISTER`         | `true`                                                                     | Register automatically on the first user message.                                    |
+| `injectSystemPrompt`  | `AGENTPOST_INJECT_SYSTEM_PROMPT`  | `true`                                                                     | Append the mesh protocol explanation to the system prompt.                           |
+| `heartbeatIntervalMs` | `AGENTPOST_HEARTBEAT_INTERVAL_MS` | `15000`                                                                    | How often a registered agent refreshes its liveness.                                 |
+| `staleAfterMs`        | `AGENTPOST_STALE_AFTER_MS`        | `60000`                                                                    | No heartbeat for this long → agent shows as `stale`.                                 |
+| `presenceReapMs`      | `AGENTPOST_PRESENCE_REAP_MS`      | `300000`                                                                   | No heartbeat for this long → the presence record is dropped, the mailbox stays. Cap 24h. |
+| `messageRetentionMs`  | `AGENTPOST_MESSAGE_RETENTION_MS`  | `86400000`                                                                  | How long an undelivered message is kept in `inbox/`, `dead/` and `quarantine/` before it is dropped. Cap 7d. |
+| `ackWaitMs`           | `AGENTPOST_ACK_WAIT_MS`           | `3000`                                                                     | How long `agentpost_send` waits for delivery confirmation before returning `queued`. |
+| `ackRetentionMs`      | `AGENTPOST_ACK_RETENTION_MS`      | `300000`                                                                   | How long delivery acknowledgements remain before they are reaped.                    |
+| `queueRetentionMs`    | `AGENTPOST_QUEUE_RETENTION_MS`    | `300000`                                                                   | How long an empty inbox of a gone agent is kept before deletion.                     |
+| `busyDeferMs`         | `AGENTPOST_BUSY_DEFER_MS`         | `2000`                                                                     | Delay before retrying a busy OpenCode session. A busy peer is a slow peer: the message is never dropped, it waits in the inbox. |
+| `maxBusyDefers`       | `AGENTPOST_MAX_BUSY_DEFERS`       | `12`                                                                       | Busy defers before the sender is told delivery became `ambiguous`. The message itself is never dropped. |
+| `promptTimeoutMs`     | `AGENTPOST_PROMPT_TIMEOUT_MS`     | `30000`                                                                    | Maximum time for one asynchronous prompt before delivery becomes `ambiguous`.       |
+| `pollIntervalMs`      | `AGENTPOST_POLL_INTERVAL_MS`      | `2000`                                                                     | Inbox poll interval, as a fallback for missed filesystem events.                     |
+| `maxTextLength`       | `AGENTPOST_MAX_TEXT_LENGTH`       | `8000`                                                                     | Maximum message body length, in characters.                                          |
+| `leaseDurationMs`     | `AGENTPOST_LEASE_DURATION_MS`     | `60000`                                                                    | Claim lease duration before recovery may retry a message.                            |
+| `maxDeliveryAttempts` | `AGENTPOST_MAX_DELIVERY_ATTEMPTS` | `3`                                                                        | Maximum injection attempts before moving a message to `dead/`.                      |
+| `maxInboxMessages`    | `AGENTPOST_MAX_INBOX_MESSAGES`    | `256`                                                                      | Maximum pending `.json` messages in one inbox.                                       |
+| `maxMessageBytes`     | `AGENTPOST_MAX_MESSAGE_BYTES`     | `32768`                                                                    | Maximum serialized size of one message.                                             |
+| `maxInboxBytes`       | `AGENTPOST_MAX_INBOX_BYTES`       | `8388608`                                                                  | Maximum serialized bytes across pending messages in one inbox.                      |
+| `maxReplyDepth`       | `AGENTPOST_MAX_REPLY_DEPTH`       | `8`                                                                        | Maximum bounded reply-chain depth.                                                    |
+| `processedRetentionMs` | `AGENTPOST_PROCESSED_RETENTION_MS` | `86400000`                                                                | How long a `processed/<msgid>.json` marker suppresses replay before it is reaped.    |
+| `fetchLimit`           | `AGENTPOST_FETCH_LIMIT`            | `20`                                                                      | Max messages one `agentpost_fetch` takes, and the batch size that triggers a notice. |
+| `fetchFallbackMs`      | `AGENTPOST_FETCH_FALLBACK_MS`      | `30000`                                                                   | How long an unanswered batch notice waits before the messages arrive as turns.       |
 
-`AGENTMESH_LOG_LEVEL` controls structured stderr logging: `off` (default), `info`, or
+`AGENTPOST_LOG_LEVEL` controls structured stderr logging: `off` (default), `info`, or
 `debug`. Each enabled line is JSON with a timestamp, level, fixed event name, and
 safe numeric/boolean fields only; message text, metadata, server URLs, credentials,
-and control-character user strings are never logged. `AGENTMESH_DEBUG=1` remains a
-deprecated fallback that selects `info` when `AGENTMESH_LOG_LEVEL` is unset.
+and control-character user strings are never logged. `AGENTPOST_DEBUG=1` remains a
+deprecated fallback that selects `info` when `AGENTPOST_LOG_LEVEL` is unset.
 
 Acknowledgement files are retained independently from agent records. `ackRetentionMs`
 defaults to five minutes and is capped at 24 hours; use it when a shared directory

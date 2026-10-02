@@ -19,7 +19,7 @@ V1:
 
 ```ts
 import type { Plugin } from "@opencode-ai/plugin"
-export const AgentMesh: Plugin = async (input, options) => {
+export const AgentPost: Plugin = async (input, options) => {
   // ...
   return { tool, "chat.message", "experimental.chat.system.transform", "event", dispose }
 }
@@ -30,7 +30,7 @@ V2:
 ```ts
 import { Plugin } from "@opencode/plugin"
 export default Plugin.define({
-  id: "agentmesh",
+  id: "agentpost",
   async setup(ctx) { /* ... */ },
 })
 ```
@@ -59,7 +59,7 @@ V1 возвращает map через `tool()`. V2 регистрирует ч�
 ```ts
 await ctx.tool.transform((editor) => {
   editor.add({
-    name: "agentmesh_send",
+    name: "agentpost_send",
     description: "...",
     input: { type: "object", properties: { ... }, required: [...] },
     async execute(input) {
@@ -104,9 +104,9 @@ await ctx.tool.transform((editor) => {
 
 ```jsonc
 // V1
-{ "plugin": [["@vdrsl/opencode-agentmesh", { "id": "..." }]] }
+{ "plugin": [["@vdrsl/opencode-agentpost", { "id": "..." }]] }
 // V2
-{ "plugins": [{ "package": "@vdrsl/opencode-agentmesh", "options": { "id": "..." } }] }
+{ "plugins": [{ "package": "@vdrsl/opencode-agentpost", "options": { "id": "..." } }] }
 ```
 
 Ключ `plugin` → `plugins`, tuple-форма → object-форма.
@@ -138,7 +138,7 @@ src/envelope.ts
    межпроцессная: watcher забирает из filesystem inbox и инжектит в сессию
    получателя. Разные слои. V2 не устраняет watcher — меняет только механизм
    инжекции. Claiming, batch notification, fetch tool, fallback остаются на
-   agentmesh.
+   agentpost.
 
 2. **«promptAsync → session.prompt — низкая сложность, V2 даже лучше»** — оптимистично.
    Семантика admission/execution, ошибки, таймауты, abort надо сверять с

@@ -1,8 +1,8 @@
 # AGENTS.md
 
-`@vdrsl/opencode-agentmesh` — an opencode **plugin** (not an MCP server, not an app) that gives
+`@vdrsl/opencode-agentpost` — an opencode **plugin** (not an MCP server, not an app) that gives
 opencode sessions in different directories/servers peer-to-peer messaging. Published to npm
-from `src/` → `dist/`. Entrypoint: `src/index.ts` (default export `AgentMesh: Plugin`).
+from `src/` → `dist/`. Entrypoint: `src/index.ts` (default export `AgentPost: Plugin`).
 
 ## Commands
 
@@ -29,7 +29,7 @@ npm pack --dry-run                                      # verifies the published
   Never "fix" these to `.js`.
 - `verbatimModuleSyntax: true` — type-only imports must use `import type` / `type` specifiers.
 - `noUncheckedIndexedAccess: true` — array/record indexing yields `T | undefined`. Env reads use
-  bracket syntax (`process.env["AGENTMESH_DEBUG"]`) throughout; keep that style.
+  bracket syntax (`process.env["AGENTPOST_DEBUG"]`) throughout; keep that style.
 - Style (unenforced, so match it by hand): no semicolons, double quotes, 2-space indent, ~100 cols.
 - Every file in `src/` opens with a block comment explaining **why** the module exists and what
   invariant it holds. Keep that when adding files; these headers are the real design docs.
@@ -37,7 +37,7 @@ npm pack --dry-run                                      # verifies the published
 ## Architecture: the invariants worth protecting
 
 There is **no daemon, no port, no lock**. All coordination happens through one home directory
-(`$AGENTMESH_HOME`, else `$XDG_DATA_HOME/opencode-agentmesh`, else `~/.local/share/opencode-agentmesh`):
+(`$AGENTPOST_HOME`, else `$XDG_DATA_HOME/opencode-agentpost`, else `~/.local/share/opencode-agentpost`):
 
 ```
 <home>/agents/<id>.json        one record, written ONLY by its owner
@@ -90,7 +90,7 @@ Correctness rests on facts that are easy to break accidentally:
   reasoning only holds while something comes back to read it, and with no record nothing does:
   inheritance enumerates records, so there is no candidate to inherit the box. The result was
   `queued` for mail nothing would ever read, and the model believes that status. No record, no
-  reader, no promise — `E_NO_AGENT`, and the model is pointed at `agentmesh_peers` for a real id.
+  reader, no promise — `E_NO_AGENT`, and the model is pointed at `agentpost_peers` for a real id.
   `stale` still means "not heartbeating right now" and still receives: a stale record exists.
   Note the asymmetry, because it decides whether mail survives: a *closed* chat gets no address at
   all, but *reopening the same chat* mints the same one, because the name is a hash of the
@@ -116,9 +116,9 @@ Correctness rests on facts that are easy to break accidentally:
   new per-message state follows this split, not a shared file.
 - **Reading the mailbox is never the delivery path.** Injection is: the recipient's own watcher
   claims a message, injects it, stamps `processed/<msgid>.json` and only then deletes the inbox
-  copy. `agentmesh_fetch` is the consuming escape hatch for a batch the watcher could not inject
+  copy. `agentpost_fetch` is the consuming escape hatch for a batch the watcher could not inject
   (a busy session, or a crashed one), and it **excludes anything with a processed marker**, so a
-  model can never be shown a turn it already saw. `agentmesh_deliveries`
+  model can never be shown a turn it already saw. `agentpost_deliveries`
   reads `outbox/` filtered by the entry's `from` — that field is the only reason a shared outbox
   directory can stay owner-private, so write it on every entry.
 - **One winner per `msgid`, and the batch decision is made on claims, never on a readdir count.** A
@@ -210,7 +210,7 @@ Correctness rests on facts that are easy to break accidentally:
   falls back to the generated description, so an agent that comes back is indistinguishable from a
   background process that never introduced itself. This is deliberate: the record is ephemeral by
   design, and persisting the description would glue back together what Phase 1 separated. The fix
-  is one `agentmesh_register` call, so `prompt.ts` tells the model to make it when it has a role and
+  is one `agentpost_register` call, so `prompt.ts` tells the model to make it when it has a role and
   sees the default description. If it proves to bite in practice, it belongs with identity in
   Phase 4, not as a one-off here.
 - **One plugin instance can host several sessions** (multiple opencode sessions in one directory).
@@ -242,10 +242,10 @@ Correctness rests on facts that are easy to break accidentally:
   new SDK call.
 - `src/prompt.ts` and the tool descriptions in `src/tools.ts` are injected into other models'
   prompts. They are behavioural spec, not comments — edit them with the same care as code.
-- Config precedence: `AGENTMESH_*` env > plugin options > defaults (`resolveConfig`, `src/config.ts`).
-- Structured logging is opt-in with `AGENTMESH_LOG_LEVEL=off|info|debug`; output is JSON lines with fixed events and allowlisted numeric/boolean fields. `AGENTMESH_DEBUG=1` is a deprecated info fallback.
-- Installed by users as `{ "plugin": ["@vdrsl/opencode-agentmesh"] }`, or with options as
-  `{ "plugin": [["@vdrsl/opencode-agentmesh", { "id": "…" }]] }`.
+- Config precedence: `AGENTPOST_*` env > plugin options > defaults (`resolveConfig`, `src/config.ts`).
+- Structured logging is opt-in with `AGENTPOST_LOG_LEVEL=off|info|debug`; output is JSON lines with fixed events and allowlisted numeric/boolean fields. `AGENTPOST_DEBUG=1` is a deprecated info fallback.
+- Installed by users as `{ "plugin": ["@vdrsl/opencode-agentpost"] }`, or with options as
+  `{ "plugin": [["@vdrsl/opencode-agentpost", { "id": "…" }]] }`.
 
 ## Testing notes
 

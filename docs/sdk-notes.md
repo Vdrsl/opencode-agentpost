@@ -67,7 +67,7 @@ The generated event union includes:
 
 Generated error types include `SessionBusyError` and `SessionNotFoundError`.
 
-The plugin's `AGENTMESH_DEBUG` path now logs the received event type from the existing event hook. This is diagnostic only and does not change delivery behavior.
+The plugin's `AGENTPOST_DEBUG` path now logs the received event type from the existing event hook. This is diagnostic only and does not change delivery behavior.
 
 ## Fake HTTP probe
 
@@ -93,7 +93,7 @@ The second server was used to verify real session creation and status discovery.
 
 ## Iteration 3.1 status vocabulary
 
-AgentMesh now names the recipient acknowledgement states explicitly:
+AgentPost now names the recipient acknowledgement states explicitly:
 
 - `accepted`: OpenCode accepted the asynchronous prompt.
 - `failed`: the recipient reported a synchronous injection error.
@@ -105,7 +105,7 @@ busy, or retry behavior is changed by 3.1.
 
 ## Iteration 3.3 busy and session lifecycle handling
 
-Before sending, AgentMesh checks the root client's `session.get` and `session.status` APIs. A missing session becomes a failed delivery and is dead-lettered. A `busy` or `retry` status defers the message without consuming the normal delivery retry count. After `maxBusyDefers`, the result becomes `ambiguous`; a prompt timeout follows the same ambiguous result path.
+Before sending, AgentPost checks the root client's `session.get` and `session.status` APIs. A missing session becomes a failed delivery and is dead-lettered. A `busy` or `retry` status defers the message without consuming the normal delivery retry count. After `maxBusyDefers`, the result becomes `ambiguous`; a prompt timeout follows the same ambiguous result path.
 
 The preflight reduces the common busy/not-found races, but it cannot provide a completion guarantee after an asynchronous prompt has been accepted. The caller must not blindly resend an `ambiguous` result.
 
@@ -116,7 +116,7 @@ Each client subscribed to `/event` before creating a session and issuing `prompt
 Both requests returned HTTP `204`. The streams emitted `server.connected`, `session.created`,
 `session.updated`, `message.updated`, and `message.part.updated`; neither stream emitted
 `session.error`, `session.idle`, or a completion/failure event during the bounded five-second window.
-Therefore the plugin keeps its existing `AGENTMESH_DEBUG` event-type logging and does not add a
+Therefore the plugin keeps its existing `AGENTPOST_DEBUG` event-type logging and does not add a
 completion acknowledgement or new delivery state.
 
 ## Iteration 3.4 local processed registry

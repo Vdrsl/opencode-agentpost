@@ -73,7 +73,7 @@ async function inject(fake: FakeOpenCode, sessionID: string, text: string, timeo
 
 async function fixture(mode: FakeOpenCodeMode, overrides: Record<string, unknown> = {}) {
   const fake = await startFakeOpenCode(mode)
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-e2e-"))
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-e2e-"))
   const config = testConfig(home, { pollIntervalMs: 10, ...overrides })
   const inbox = path.join(config.inboxDir, "reviewer")
   await fs.mkdir(inbox, { recursive: true })

@@ -9,7 +9,7 @@ import { writeJsonAtomic } from "../src/store.ts"
 import type { MeshMessage } from "../src/types.ts"
 
 export async function tempHome(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "agentmesh-test-"))
+  return fs.mkdtemp(path.join(os.tmpdir(), "agentpost-test-"))
 }
 
 export function testConfig(home: string, overrides: Partial<MeshConfig> = {}): MeshConfig {

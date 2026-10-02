@@ -17,9 +17,9 @@ describe("envelope", () => {
     const rendered = renderEnvelope(base)
     assert.equal(
       rendered.split("\n")[0],
-      "[agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "[agentpost] from: planner | 2026-08-27T09:12:03Z | msg: agm_01ARZ3NDEKTSV4RRFFQ69G5FAV",
     )
-    assert.ok(rendered.endsWith('(end of agentmesh message; to reply, call agentmesh_send with to "planner")'))
+    assert.ok(rendered.endsWith('(end of agentpost message; to reply, call agentpost_send with to "planner")'))
   })
 
   it("includes the context tag only when given", () => {

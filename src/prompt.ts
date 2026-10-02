@@ -88,9 +88,9 @@ ${identity}
 7. **Incoming messages look like this**, arriving as a user turn:
 
    \`\`\`
-    [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | in-reply-to: agm_… | re: T-001
+    [agentpost] from: planner | 2026-08-27T09:12:03Z | msg: agm_… | in-reply-to: agm_… | re: T-001
     <what they want>
-    (end of agentmesh message; to reply, call ${TOOL_SEND} with to "planner")
+    (end of agentpost message; to reply, call ${TOOL_SEND} with to "planner")
     \`\`\`
 
     **Example of sending a message:**
