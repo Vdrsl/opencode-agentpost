@@ -1,6 +1,7 @@
 # Changelog
 
 ## v0.13.0 — Phase 4: Address inheritance
+- **Breaking: an id is addressable only while its record exists.** Phase 1 also accepted a bare `inbox/<id>/` directory, on the reasoning that the mailbox outlives the presence record so mail for an away agent can queue. That reasoning only holds while something comes back to read it, and with no record nothing does — inheritance enumerates records, so there is no candidate to inherit the box. The result was `queued` for mail nothing would ever read, and the model believes that status. `send` now answers `E_NO_AGENT` and points at `agentmesh_peers`. A `stale` peer is unaffected and still receives: the record is what decides, not the liveness. Reopening the *same* chat mints the same id again, since the name is hashed from the `sessionID`, so a peer returning to the chat it left is reachable under the familiar address.
 - Fix, found on live data: `agentmesh_fetch` reported `hasMore: false` while the recipient's own
   claim was still on disk, so a model that trusted it stopped paging and the message waited for the
   next notification. A `.json.taken` is unread mail that `listJsonFiles` cannot see. Counting every

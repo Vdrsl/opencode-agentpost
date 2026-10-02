@@ -17,6 +17,7 @@ import {
   resolveConfig,
   TOOL_DELIVERIES,
   TOOL_FETCH,
+  TOOL_PEERS,
   TOOL_REGISTER,
   TOOL_SEND,
 } from "../src/config.ts"
@@ -143,17 +144,21 @@ describe("mesh", () => {
     assert.equal(register.args && "force" in register.args, false)
   })
 
-  it("does not promise delivery to a mailbox nobody will read", async () => {
-    // `queued` used to read as "delivered when it comes back, for as long as the
-    // inbox exists". Both halves are wrong for a chat closed normally: the
-    // inbox outlives the presence record and no later session reads it. The model
-    // treats this text as an instruction, so the boundary has to be in it.
+  it("tells the model that queued means a reader exists", async () => {
+    // `queued` used to be documented as "delivered when it comes back, for as
+    // long as the inbox exists", which was a promise nothing kept: a chat closed
+    // normally leaves a mailbox no later session reads. The model treats this
+    // text as an instruction, so the meaning of the status must be in it.
     const { a } = await twoAgents()
     const tools = buildTools(a.mesh, "http://127.0.0.1:4096")
     const send = tools[TOOL_SEND] as unknown as { description?: string }
-    assert.match(send.description ?? "", /queued" has a shelf life, not a guarantee/)
-    // And it must point at the way to find out, not just at the limit.
-    assert.match(send.description ?? "", new RegExp(TOOL_DELIVERIES))
+    assert.match(send.description ?? "", /"queued" means the agent is registered/)
+    // A closed chat has no address, and the model needs the way out, not just
+    // the refusal.
+    assert.match(send.description ?? "", /E_NO_AGENT/)
+    assert.match(send.description ?? "", new RegExp(TOOL_PEERS))
+    // And the old lie must not survive anywhere in the description.
+    assert.equal(/for as long as that inbox exists/.test(send.description ?? ""), false)
   })
 
   it("writes lease metadata into a claimed message", async () => {
@@ -637,7 +642,7 @@ describe("mesh", () => {
     assert.equal(b.injected.length, 1)
   })
 
-  it("sends to an address with a mailbox but no presence record", async () => {
+  it("refuses an address whose mailbox outlived its record", async () => {
     const { config, a } = await twoAgents()
     const aContext = sessionContext("ses_a", "/tmp/planner")
     await a.mesh.register({ context: aContext, id: "planner", description: "plans" })
@@ -646,9 +651,41 @@ describe("mesh", () => {
     await fs.mkdir(inbox, { recursive: true })
     assert.equal(await a.mesh.registry.get("away"), undefined)
 
-    const result = await a.mesh.send({ context: aContext, to: "away", text: "mail for later" })
-    assert.equal(result.status, "queued")
-    assert.equal((await messageFiles(inbox)).length, 1)
+    // Queueing here answered `queued` for mail nothing would ever read, and the
+    // model believes that status. A mailbox alone is not an address: nothing
+    // inherits it (inheritance enumerates records) and nothing comes back to it.
+    await assert.rejects(
+      a.mesh.send({ context: aContext, to: "away", text: "mail for later" }),
+      (error: MeshError) => error.code === "E_NO_AGENT",
+    )
+    // And nothing was written into the box nobody owns.
+    assert.deepEqual(await messageFiles(inbox), [])
+  })
+
+  it("makes the same address valid again when the same chat returns", async () => {
+    // The asymmetry that decides whether this rule is affordable: a closed chat
+    // has no address, but reopening *that* chat mints the same one, because the
+    // name is hashed from the session id. So refusing to queue is not permanent
+    // loss — the peer becomes reachable under the familiar address again.
+    const { a, b } = await twoAgents()
+    const sender = sessionContext("ses_sender", "/tmp/planner")
+    await b.mesh.autoRegister(sender)
+    const closed = sessionContext("ses_closed", "/tmp/planner")
+    const id = await a.mesh.autoRegister(closed)
+    await a.mesh.unregisterSession("ses_closed")
+    await assert.rejects(
+      b.mesh.send({ context: sender, to: id, text: "while closed" }),
+      (error: MeshError) => error.code === "E_NO_AGENT",
+    )
+
+    cleanups.push(() => a.mesh.unregisterSession("ses_closed"))
+    const again = await a.mesh.autoRegister(closed)
+    assert.equal(again, id)
+    // The point is that the address works again, not how fast it drains: `a` now
+    // has a live watcher, so the message may be delivered outright rather than
+    // queued. Both are the promise being kept.
+    const sent = await b.mesh.send({ context: sender, to: id, text: "after reopening" })
+    assert.ok(sent.status === "accepted" || sent.status === "queued", sent.status)
   })
 
   it("rejects an address that was never used", async () => {

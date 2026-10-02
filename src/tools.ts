@@ -31,8 +31,8 @@ const SEND_DESCRIPTION = `Send one message to another registered agent. It is in
 This returns a delivery status, NOT the peer's answer: "accepted" (OpenCode returned 204 and accepted the message into the peer's session), "queued" (waiting for them to come back), "failed" (it could not be injected), "ambiguous" (the delivery outcome is unknown). Accepted does not mean the peer read the message or that the model answered.
 The peer sees NO context from your session — write self-contained: what you need, why, and every referenced fact (absolute paths, agreed contract). To get an answer, ask for one explicitly; it arrives later as a new turn, so keep working instead of waiting.
 A peer whose session is busy reports "queued": the message stays in its inbox and is injected as soon as that session goes idle. That is normal — do not resend it.
-You can send to an agent that is offline: the message is kept in its inbox and delivered when it comes back. "stale" means not heartbeating right now, not gone.
-The inbox outlives the presence record, so "queued" has a shelf life, not a guarantee: a chat closed normally leaves a mailbox that no later session reads, and a message nobody claims in time ends as "undeliverable" in ${TOOL_DELIVERIES}. If a peer has gone quiet, check ${TOOL_DELIVERIES} before assuming the message is still waiting.
+"queued" means the agent is registered and the message has a reader: it arrives when that session goes idle, or when the agent comes back. A peer whose window was closed reports no address at all, because there is nobody to deliver to — ${TOOL_SEND} fails with E_NO_AGENT. Read the registered ids from ${TOOL_PEERS} and send to one of those instead. Do not retry the same id: a closed chat gets a new one when it is reopened.
+"stale" means not heartbeating right now, not gone, and a stale peer still receives.
 Use context as a short topic tag (e.g. "T-001 contract"). If no reply comes within a few minutes, check ${TOOL_PEERS} before re-sending.`
 
 const DELIVERIES_DESCRIPTION = `Check what became of the messages you sent: id, recipient, delivery state, timestamp. Newest first.

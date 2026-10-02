@@ -40,11 +40,12 @@ ${identity}
 1. **Look before you send.** Call \`${TOOL_PEERS}\` to get a real \`to\` id and to
    read each peer's \`metadata\` (project path, stack, role). Only \`alive\` peers
    act promptly; a \`stale\` peer still receives the message and gets it when it
-   comes back. You can also send to a peer that is not registered at all, as long
-   as its inbox exists — the message queues there and is delivered on its return.
-   If \`${TOOL_SEND}\` answers \`E_NO_AGENT\`, that peer is gone:
-   re-read \`${TOOL_PEERS}\` and send once more to whoever took its place. A
-   restarted session gets a new name, so the old id never comes back.
+   comes back, because its address is still registered.
+   If \`${TOOL_SEND}\` answers \`E_NO_AGENT\`, that peer has no address at all —
+   its chat was closed, and a mailbox without a record is a box nobody owns. A
+   peer who merely walked away still has one. Re-read \`${TOOL_PEERS}\` and send
+   to whoever is there now. Do not retry the same id: reopening the *same* chat
+   restores the same address, but a *different* chat is a different address.
 
 2. **Ignore peers that never introduced themselves.** A session registers itself
    on your first turn, so background processes end up on the mesh next to real

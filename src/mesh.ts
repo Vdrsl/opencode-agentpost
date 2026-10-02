@@ -7,7 +7,6 @@
  * heartbeats them all and sweeps the dead ones.
  */
 
-import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -17,7 +16,6 @@ import { renderEnvelope } from "./envelope.ts"
 import {
   enqueue,
   hasProcessedMarker,
-  inboxDirFor,
   InboxWatcher,
   readProcessedDepth,
   readProcessedThreadId,
@@ -401,20 +399,6 @@ export class Mesh {
   // -------------------------------------------------------------- messaging
 
   /**
-   * Does this address have a mailbox? The directory survives the presence
-   * record, which is what makes mail to an agent that is away queue instead of
-   * bounce. A sender creates it on the first successful enqueue.
-   */
-  private async inboxDirExists(id: string): Promise<boolean> {
-    try {
-      await fs.stat(inboxDirFor(this.config, id))
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  /**
    * The depth we injected a message at. It comes from our own processed marker,
    * not from the sender's inbox: that copy is deleted the moment delivery
    * succeeds, which used to make every reply look like depth 0 and let a chain
@@ -478,11 +462,17 @@ export class Mesh {
       replyDepth = parentDepth + 1
     }
 
-    // Addressability is not presence. A record proves the address was used
-    // recently; the inbox directory proves it was used at all, and it outlives
-    // the record on purpose — mail for an agent that is away has to queue.
+    // A record is the whole of addressability. Phase 1 also accepted a bare
+    // inbox directory, on the reasoning that the mailbox outlives the record so
+    // mail for an away agent has to queue — but that reasoning only holds while
+    // something will come back and read it. With no record there is nothing to
+    // inherit (inheritance enumerates records) and nothing to come back to, so
+    // the directory is just a box nobody owns. Queuing there answered `queued`
+    // for mail that would sit unread until it aged out, which is the model
+    // believing a promise the mesh cannot keep. No record, no reader, no
+    // promise: say so.
     const target = await this.registry.get(input.to)
-    if (!target && !(await this.inboxDirExists(input.to))) {
+    if (!target) {
       const known = (await this.peers({ sessionID: input.context.sessionID }))
         .map((peer) => peer.id)
         .join(", ")

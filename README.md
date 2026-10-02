@@ -77,13 +77,18 @@ no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
 reported a terminal injection error; `ambiguous` means the delivery outcome is
 not known and the caller must not blindly resend.
 
-Addressability is not presence. An id is accepted as long as either its
-`agents/<id>.json` record exists or its `inbox/<id>/` directory does, so mail to
-an agent whose opencode is closed queues instead of bouncing: the record is
-reaped after `presenceReapMs` (five minutes by default) but the mailbox outlives
-it, and `stale` only means "not heartbeating right now". The one address you
-cannot send to is an id that was never used, because there is nowhere to put the
-message.
+A record is the whole of addressability. An id is accepted as long as its
+`agents/<id>.json` record exists; nothing else qualifies, not even an `inbox/<id>/`
+directory that outlived the record. `stale` only means "not heartbeating right
+now" and still receives, because the record exists.
+
+So mail to an agent that is merely away queues: the record is reaped after
+`presenceReapMs` (five minutes by default), but until that happens the address is
+live and the message is delivered when the session comes back. Once the record is
+gone there is no address — `send` fails with `E_NO_AGENT` rather than queueing
+into a mailbox nobody will read. Reopening the *same* chat mints the same id
+again, since the name is hashed from the session id, so a peer that returns to the
+chat it left is reachable again under the familiar address.
 
 ```
 [agentmesh] from: planner | 2026-08-27T09:12:03Z | msg: agm_01… | re: T-001 | in-reply-to: agm_00…

@@ -84,10 +84,17 @@ Correctness rests on facts that are easy to break accidentally:
   state under `<home>/processed/`; recovery checks them before reinjecting an orphaned claim.
 - **Liveness = record mtime + pid check.** Heartbeat is `fs.utimes` only, never a rewrite
   (`store.touch`). `pidAlive` makes a killed opencode stale immediately instead of after 60s.
-- **Addressability is not presence.** `send()` accepts an id while either its record exists or its
-  `inbox/<id>/` directory does (`Mesh.inboxDirExists`), so mail to an agent that closed its window
-  queues instead of failing with `E_NO_AGENT`. `presenceReapMs` drops the record; the mailbox
-  outlives it on purpose. `stale` means "not heartbeating right now", never "undeliverable".
+- **A record is the whole of addressability.** `send()` accepts an id while its `agents/<id>.json`
+  exists; nothing else qualifies, not even a non-empty `inbox/<id>/`. Phase 1 also accepted a bare
+  mailbox, on the reasoning that it outlives the record so mail for an away agent has to queue. That
+  reasoning only holds while something comes back to read it, and with no record nothing does:
+  inheritance enumerates records, so there is no candidate to inherit the box. The result was
+  `queued` for mail nothing would ever read, and the model believes that status. No record, no
+  reader, no promise — `E_NO_AGENT`, and the model is pointed at `agentmesh_peers` for a real id.
+  `stale` still means "not heartbeating right now" and still receives: a stale record exists.
+  Note the asymmetry, because it decides whether mail survives: a *closed* chat gets no address at
+  all, but *reopening the same chat* mints the same one, because the name is a hash of the
+  `sessionID`. That is why a record, not a directory, is the honest test.
 - **`dead/` and `quarantine/` live outside `inbox/<id>/`.** Inside, a single dead letter would keep
   the inbox non-empty forever, and an inbox is only reaped when it is empty. That's the whole reason
   for `<home>/dead/<id>/` and `<home>/quarantine/<id>/`.
