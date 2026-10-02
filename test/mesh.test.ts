@@ -1279,7 +1279,7 @@ describe("mesh", () => {
     assert.equal(await readProcessedDepth(config, "not-a-message-id"), 0)
   })
 
-  it("sees the peer through agentmesh_peers", async () => {
+  it("sees the peer through agentpost_peers", async () => {
     const { config, a, b } = await twoAgents()
     await a.mesh.register({
       context: sessionContext("ses_a", "/tmp/planner"),
@@ -1986,7 +1986,7 @@ describe("mesh", () => {
     assert.equal((await a.mesh.registry.get(first))!.record.routing.sessionID, "ses_new")
   })
 
-  it("carries a predecessor's description onto the session that inherits its address", async () => {
+  it("inherits the address and the mailbox but not the predecessor's identity", async () => {
     const { a, b } = await twoAgents()
     const first = await a.mesh.autoRegister(sessionContext("ses_old", "/tmp/My Project"))
     const record = (await a.mesh.registry.get(first))!.record
@@ -1994,12 +1994,36 @@ describe("mesh", () => {
     record.description = "owns the migration"
     record.metadata = { role: "lead" }
     await writeJsonAtomic(a.mesh.registry.recordPath(first), record)
+    // Mail already addressed to the predecessor, to prove the box is what moves.
+    await fs.mkdir(path.join(b.mesh.config.inboxDir, first), { recursive: true })
 
     assert.equal(
       await b.mesh.autoRegister(sessionContext("ses_new", "/tmp/My Project")),
       first,
     )
     const inherited = (await b.mesh.registry.get(first))!.record
+    assert.equal(inherited.routing.sessionID, "ses_new")
+    assert.equal(
+      inherited.description,
+      "opencode agent working in /tmp/My Project",
+    )
+    assert.deepEqual(inherited.metadata, {})
+  })
+
+  it("takes its own config description when it inherits an address, not the predecessor's", async () => {
+    const { a } = await twoAgents({ description: "owns the migration", metadata: { role: "lead" } })
+    const first = await a.mesh.autoRegister(sessionContext("ses_old", "/tmp/My Project"))
+    const record = (await a.mesh.registry.get(first))!.record
+    record.pid = 2 ** 30
+    // The predecessor introduced itself differently. Same config on purpose, so
+    // what the newcomer gets is provably not read off the old record.
+    record.description = "something else entirely"
+    record.metadata = { role: "stale" }
+    await writeJsonAtomic(a.mesh.registry.recordPath(first), record)
+
+    const second = await a.mesh.autoRegister(sessionContext("ses_new", "/tmp/My Project"))
+    assert.equal(second, first)
+    const inherited = (await a.mesh.registry.get(first))!.record
     assert.equal(inherited.description, "owns the migration")
     assert.deepEqual(inherited.metadata, { role: "lead" })
   })

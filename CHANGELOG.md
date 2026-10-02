@@ -1,14 +1,14 @@
 # Changelog
 
 ## v0.13.0 — Phase 4: Address inheritance
-- **Breaking: an id is addressable only while its record exists.** Phase 1 also accepted a bare `inbox/<id>/` directory, on the reasoning that the mailbox outlives the presence record so mail for an away agent can queue. That reasoning only holds while something comes back to read it, and with no record nothing does — inheritance enumerates records, so there is no candidate to inherit the box. The result was `queued` for mail nothing would ever read, and the model believes that status. `send` now answers `E_NO_AGENT` and points at `agentmesh_peers`. A `stale` peer is unaffected and still receives: the record is what decides, not the liveness. Reopening the *same* chat mints the same id again, since the name is hashed from the `sessionID`, so a peer returning to the chat it left is reachable under the familiar address.
-- Fix, found on live data: `agentmesh_fetch` reported `hasMore: false` while the recipient's own
+- **Breaking: an id is addressable only while its record exists.** Phase 1 also accepted a bare `inbox/<id>/` directory, on the reasoning that the mailbox outlives the presence record so mail for an away agent can queue. That reasoning only holds while something comes back to read it, and with no record nothing does — inheritance enumerates records, so there is no candidate to inherit the box. The result was `queued` for mail nothing would ever read, and the model believes that status. `send` now answers `E_NO_AGENT` and points at `agentpost_peers`. A `stale` peer is unaffected and still receives: the record is what decides, not the liveness. Reopening the *same* chat mints the same id again, since the name is hashed from the `sessionID`, so a peer returning to the chat it left is reachable under the familiar address.
+- Fix, found on live data: `agentpost_fetch` reported `hasMore: false` while the recipient's own
   claim was still on disk, so a model that trusted it stopped paging and the message waited for the
   next notification. A `.json.taken` is unread mail that `listJsonFiles` cannot see. Counting every
   claim is not the fix either — a claim another watcher holds is being injected into that session and
   is not ours to fetch, so counting it pages forever. Ownership is the discriminator.
 - A fresh session in the same directory claims the address a predecessor left behind, so its mailbox
-  survives, along with the description and metadata it was using. The name is still hashed from the
+  survives. The name is still hashed from the
   `sessionID`. The predecessor must have died *without giving up its address* — a crash, not a close:
   `session.deleted` runs `Registry.unregister`, which removes the record, and inheritance enumerates
   records, so a clean close offers no candidate and the mailbox is left with nothing that can address
@@ -17,6 +17,13 @@
   killing the process `agents/<id>.json` was gone and came back only when the next session
   auto-registered. Reopening the *same* chat keeps its address regardless, but for a different reason:
   the name is a hash of the `sessionID`, so it is deterministic and no inheritance is involved.
+- **The address carries the mailbox, not the identity.** Inheriting the description and metadata along
+  with it assumed "one directory, one logical agent", which the soak disproved: a different agent moved
+  into the directory, inherited the address, and published the predecessor's description as its own —
+  a lie in the record that peers read as fact. A new owner now describes itself, from
+  `config.description` when the project declares one and from the generated default otherwise, with
+  metadata empty unless `config.metadata` says otherwise. The address and the mailbox still move, which
+  is what mail needs.
 - A record is handed out only when its owner is genuinely gone: `takeable` is `!pidAlive(pid) || ageMs(recordMtime) >= presenceReapMs`, deliberately not `status`. A hung process keeps heartbeating and looks alive for the whole reap window, and reusing `status` would have added `staleAfterMs` on top. `pickFree` uses the same criterion, so both paths that hand out an address agree.
 - A fenced heartbeat now stops the watcher instead of only logging. A session that lost its address stands down rather than delivering into a mailbox another session now owns. The window between the record changing hands and the loser's next heartbeat is a documented limit, not a silent one: the record is a plain atomic rewrite, last write wins, and an `fs.link` claim is the possible later hardening.
 - A heartbeat that comes back **missing** is no longer treated as a fence. The two mean opposite things, and reading them alike made a session go dark while its inbox kept filling: a sweep that reaps a record under a session blocked past `presenceReapMs` is not a takeover, and the mailbox it addresses outlives the record on purpose. `heartbeat` now distinguishes `ok`/`missing`/`fenced`, and a missing record is written back with the session's own description and metadata — without `force`, so a live session holding the address still wins and the loser stands down as before.
@@ -28,16 +35,16 @@
 
 ## v0.12.0 — Phase 3.5: Adaptive delivery
 - Fix a delivery-correctness bug present since the first release: claiming a message used `fs.rename`, and on Windows two concurrent renames of the same source both succeed, so two delivery paths could each believe they owned one message. Claiming is now `fs.link`, which is exclusive by definition; `EEXIST` is the normal losing outcome, and a crash between link and drop leaves two names on one inode that recovery consolidates. This undercuts the at-most-once guarantee, so it is a correctness fix rather than part of the feature below.
-- Adaptive delivery: idle with one pending message injects the body as before; two or more produce a single notice and the model calls `agentmesh_fetch` once for the batch. After `fetchFallbackMs` the fallback body-injects whatever is still pending, so a model that ignores the notice still gets its mail.
-- `agentmesh_fetch` is now consuming: it claims with the same atomic primitive the injector uses, stamps `processed/<msgid>.json` with `via`, and takes the messages out of the inbox. Returns `hasMore` so a batch larger than `fetchLimit` can be paged through.
+- Adaptive delivery: idle with one pending message injects the body as before; two or more produce a single notice and the model calls `agentpost_fetch` once for the batch. After `fetchFallbackMs` the fallback body-injects whatever is still pending, so a model that ignores the notice still gets its mail.
+- `agentpost_fetch` is now consuming: it claims with the same atomic primitive the injector uses, stamps `processed/<msgid>.json` with `via`, and takes the messages out of the inbox. Returns `hasMore` so a batch larger than `fetchLimit` can be paged through.
 - One winner per message id, enforced by the claim itself, so the fetch and the fallback racing for the same file cannot both deliver it.
 - Per-sender ordering is preserved by the monotonic ULID the sender already writes. Ordering between different senders is not a protocol guarantee.
 
-Known edge, documented rather than hidden: a message consumed by `agentmesh_fetch` is not delivered again if the session is aborted between the fetch returning and the model acting on it. A direct inject is stronger, because its text is already in the session history.
+Known edge, documented rather than hidden: a message consumed by `agentpost_fetch` is not delivered again if the session is aborted between the fetch returning and the model acting on it. A direct inject is stronger, because its text is already in the session history.
 
 ## v0.11.0 — Phase 3: Fetch & deliveries tools
-- Add `agentmesh_deliveries`: read your own outbox entries — recipient, state, timestamp — with optional `to`/`state` filters and a limit.
-- Add `agentmesh_fetch`: read-only fallback that returns the inbox messages which were never injected, excluding anything with a `processed/` marker so an already-seen turn is never shown twice.
+- Add `agentpost_deliveries`: read your own outbox entries — recipient, state, timestamp — with optional `to`/`state` filters and a limit.
+- Add `agentpost_fetch`: read-only fallback that returns the inbox messages which were never injected, excluding anything with a `processed/` marker so an already-seen turn is never shown twice.
 - Stamp `from` on every outbox entry: the directory is shared, and that field is what keeps one agent's deliveries out of another's.
 - Update the system prompt with explicit rules: delivery stays inject-primary, `fetch` is crash recovery rather than a polling loop, and `undeliverable` means resend rather than wait.
 
@@ -62,7 +69,7 @@ Known edge, documented rather than hidden: a message consumed by `agentmesh_fetc
 - Credit the original author in `README.md` and keep the original copyright in `LICENSE`, as MIT requires.
 - Add `sessionID` to every peer, so an agent can tell two chats in one directory apart and stop waiting for a closed one.
 - Auto-registered agents are now named `adjective-noun` (`quiet-otter`) hashed from their `sessionID`, instead of the directory name plus `-2`, `-3` suffixes. Deterministic, so a name survives a restart of opencode; set `id` to pin one yourself.
-- Tell the model what to do when a peer vanishes mid-send: re-read `agentmesh_peers` and try once more, because a restarted session comes back under a new name.
+- Tell the model what to do when a peer vanishes mid-send: re-read `agentpost_peers` and try once more, because a restarted session comes back under a new name.
 
 ## v0.7.0 — Cleanup
 

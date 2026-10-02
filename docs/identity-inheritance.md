@@ -98,16 +98,27 @@ against `registeredAt`, which is platform-specific. Deferred.
 |---|---|---|
 | `inbox/<id>/` | yes | It is the mail. Not moving it is the bug. |
 | `activity/<id>` | rewritten | The new owner writes its own, or `idleMs` reports the predecessor's silence. |
-| `description` / `metadata` | copied from the predecessor's record | Read at takeover time. No new profile storage. |
-| `outbox/<msgid>.json` | no | Written by its owner; `agentmesh_deliveries` filters by `from` anyway. |
+| `description` / `metadata` | **not inherited — regenerated** | The predecessor may be a different logical agent. A copied description is a lie in the record, and other agents read it as truth. |
+| `outbox/<msgid>.json` | no | Written by its owner; `agentpost_deliveries` filters by `from` anyway. |
 | `acks/`, `processed/` | no | Recipient-owned, reaped on their own timers. |
+
+**Inheritance moves the address and the mailbox, nothing else.** This is the
+correction the soak forced. "One directory, one logical agent" made it reasonable to
+inherit the description too, so a session returning after an hour would read as the
+same colleague rather than as a background process. A soak then put a *different*
+agent in that directory: it inherited the address and published the predecessor's
+description as its own, and peers took that as fact. So identity is not part of what
+an address carries — a new owner describes itself, from `config.description` when the
+project declares one, from the generated default otherwise, and metadata start empty
+unless `config.metadata` says otherwise. An agent that wants a specific description
+sets it through config or calls `agentpost_register` after start, which the prompt
+already tells it to do.
 
 **No profile layer is required.** This is the difference from my earlier draft:
 because the address is inherited from a specific record rather than derived from a
-directory, the description is available on that record while it still exists. The
-documented limitation from `6513925` — a description does not outlive
-`presenceReapMs` — still holds afterwards, and stays handled by the prompt telling
-the model to re-register. Layer 2 remains deferred.
+directory, the mailbox to move is already known. The documented limitation from
+`6513925` — a description does not outlive `presenceReapMs` — still holds, and stays
+handled by the prompt telling the model to re-register. Layer 2 remains deferred.
 
 ## Layer 1, point 4: split-brain, and what is currently broken about it
 

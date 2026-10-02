@@ -267,8 +267,15 @@ export class Mesh {
     // chats in one directory never end up as `repo` and `repo-2`.
     // A session that recreates its chat gets a new session id, and a name hashed
     // from that would change too — stranding the mailbox the old address owned.
-    // So claim the predecessor's address when there is one to claim, and inherit
-    // what it said about itself while we are at it.
+    // So claim the predecessor's address when there is one to claim.
+    //
+    // The address carries the mailbox and nothing else. "One directory, one
+    // logical agent" is what made it tempting to inherit the description too, so
+    // a session returning after an hour reads as the same colleague instead of a
+    // background process — and the soak broke that assumption: a different agent
+    // moved into the directory, inherited the address, and published the
+    // predecessor's description as its own. Other agents read that as truth, so
+    // the record lied. An address is an address; who you are is yours to say.
     //
     // A predecessor past `presenceReapMs` is simply gone, and that is not the
     // same as mail being lost: the record is reaped but the mailbox is not,
@@ -288,27 +295,17 @@ export class Mesh {
       existing && existing.record.routing.sessionID === context.sessionID
         ? existing.record
         : undefined
-    // The predecessor's record is the one carrying its description, so a session
-    // that comes back after an hour reads as the same colleague rather than as a
-    // background process. This works only because the record outlives the gap:
-    // past presenceReapMs it is reaped and the mailbox with it.
-    const carried = inherited?.record
     await this.register({
       context,
       id,
       description:
         reuse?.description ??
-        carried?.description ??
         // The project's own role, when it declares one. This is a default, not an
         // override: an agent that called `agentpost_register` is registered
         // already and never reaches this path, so config and agent never contend.
         this.config.description ??
         `opencode agent working in ${context.directory}`,
-      metadata:
-        reuse?.metadata ??
-        carried?.metadata ??
-        this.config.metadata ??
-        {},
+      metadata: reuse?.metadata ?? this.config.metadata ?? {},
       force: true,
     })
     this.deps.logger("info", "auto_registered")
