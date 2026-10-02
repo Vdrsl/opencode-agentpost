@@ -191,7 +191,12 @@ describe("crash matrix", () => {
   })
 
   it("C9 hands a live claim back only after its lease looks stale", async () => {
-    const f = await fixture({ leaseDurationMs: 100 })
+    // The lease is the only headroom this test has: it asserts that a young
+    // ctime keeps the claim alive, so anything slower than the lease between
+    // writing it and `start()` reading it flips the result. 100ms was not enough
+    // under `node --test` running files in parallel on a busy machine — it failed
+    // on the claim check while passing alone. The wait below costs the same.
+    const f = await fixture({ leaseDurationMs: 1_000 })
     const msg = message()
     await writeJsonAtomic(f.pending(msg.id), msg)
 // No `_claim` at all: the window between creating the claim and stamping its
