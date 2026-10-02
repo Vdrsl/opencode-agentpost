@@ -172,12 +172,14 @@ Correctness rests on facts that are easy to break accidentally:
   which is why no separate identity profile exists.
   **A clean session close is not that case.** `session.deleted` runs `unregisterSession` →
   `Registry.unregister`, which removes the record, and inheritance enumerates records — so with no
-  record there is no candidate, and it *cannot* fire on Ctrl+C or a closed window. Worse, the mailbox
-  survives that unregister (nothing touches `inbox/<id>/`), so `send` keeps accepting the address
-  (`Mesh.inboxDirExists`) and queues mail into a box no future session will ever read, because
-  `cleanupOrphanedInboxes` only reaps an *empty* one. Verified live on 0.13.0, not reasoned about: the
-  record was gone after close, so the address was never offered. Testing inheritance needs a death
-  that leaves no `session.deleted` — a crash, not a close.
+  record there is no candidate, and it *cannot* fire on Ctrl+C or a closed window. Verified live on
+  0.13.0, not reasoned about: the record was gone after close, so the address was never offered.
+  Testing inheritance needs a death that leaves no `session.deleted` — a crash, not a close.
+  The mailbox itself does survive the unregister (nothing deletes a *non-empty* `inbox/<id>/`), but
+  that costs nothing now: an id without a record is not addressable at all, so `send` answers
+  `E_NO_AGENT` instead of queueing into a box nobody will read, and no new mail can arrive there.
+  Mail already in it ages out by mtime after `messageRetentionMs` and the then-empty directory is
+  reaped.
 - **Ownership of a mailbox is decided by the record, and a loser stands down.** The record is a plain
   atomic rewrite, not a `fs.link` claim: last write wins, and the loser learns it lost on its next
   heartbeat, at which point `tick` stops the watcher (`heartbeat_fenced` →

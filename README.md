@@ -128,8 +128,10 @@ open at once each keep their own address, because a live one is never handed out
 Closing a chat normally is **not** that case, and it is worth knowing why.
 `session.deleted` unregisters the record, inheritance looks at records, so with
 no record there is no candidate and inheritance cannot fire on `Ctrl+C`. The
-mailbox outlives that unregister, so mail sent to the closed chat's address
-still queues — into a box no later session will read.
+mailbox outlives that unregister, but the address does not: with no record there
+is no reader, so mail to a closed chat is refused with `E_NO_AGENT` rather than
+queued into a box nobody will read. Mail already sitting in that mailbox ages out
+by mtime after `messageRetentionMs`, and the then-empty directory is reaped.
 
 The window is the record's own lifetime. Recreate a chat after the record is
 reaped and it gets a new name, and the mailbox of the old one is cleaned up like
