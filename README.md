@@ -338,18 +338,43 @@ contributing.
 
 This is a fork of [`opencode-agentmesh`](https://www.npmjs.com/package/opencode-agentmesh)
 by **Abdulkadir Polat** (npm: `polatdev`), MIT licensed. His work is the base of
-everything here, and the original copyright is kept in [LICENSE](./LICENSE).
+everything here — the filesystem transport, the record/inbox/ack layout, the
+claim-and-deliver model and the original tool set are his. The original copyright
+is kept in [LICENSE](./LICENSE), as MIT requires, and this section is here so the
+provenance is never ambiguous.
 
 What this fork changed:
 
-- `idleMs` on every peer plus an `activity/<id>` marker, so a chat nobody opened
-  for days no longer looks like a busy one, and peers are listed freshest first.
-- A busy session no longer loses a message: past `maxBusyDefers` the recipient
-  tells the sender `ambiguous` and keeps the message queued for the next idle.
-- One sweep reaps orphan inboxes, activity markers and replay markers, all behind
-  retention windows.
-- A CI matrix on Node 22 and 24, Dependabot, and a crash-boundary test matrix
-  (C1–C6) around claim, handler, acknowledgement and recovery failures.
+- **Runs on OpenCode 1 and OpenCode 2 from one package.** The default export
+  carries both entrypoints, so the same install works on either runtime. Under V2
+  the busy-session queue is the runtime's own — the plugin hands delivery to
+  `session.prompt({ delivery: "queue" })` and never asks whether a session is busy.
+- **An id is addressable only while its record exists.** Mail to a closed chat is
+  refused with `E_NO_AGENT` rather than queued into a mailbox nobody will ever
+  read, and a session that crashed without releasing its address hands that
+  address — and its mailbox — to the next session in the directory.
+- **Two more tools:** `agentpost_deliveries` reads what became of what you sent,
+  and `agentpost_fetch` is a consuming fallback for mail a crash or a busy session
+  left behind. Reply chains are bounded and threads carry a root id.
+- **A sender keeps its own record** in `outbox/`, so it cannot forget a message
+  within minutes, and a sweep reconciles that copy against the acknowledgement.
+- **`idleMs` on every peer** plus an `activity/<id>` marker, so a chat nobody
+  opened for days no longer looks like a busy one.
+- **A busy session no longer loses a message:** past `maxBusyDefers` the recipient
+  reports `ambiguous` and keeps the message queued for the next idle.
+- **Correctness fixes found on live data and in review:** reply depth read from the
+  recipient's own marker, `hasMore` counted against the recipient's real claims,
+  `dead/` and `quarantine/` moved out of the inbox so one dead letter cannot keep
+  an inbox alive forever, and one sweep reaps orphan inboxes, activity markers,
+  replay markers and outbox entries behind retention windows.
+- **Claiming is `fs.link`, not `fs.rename`** — on Windows two concurrent renames of
+  one source both succeed, so two delivery paths could each believe they owned the
+  same message.
+- **CI on Node 22 and 24 across Linux, macOS and Windows, Dependabot, an
+  eleven-case crash-boundary matrix** (C1–C11) around claim, handler,
+  acknowledgement and recovery failures, and a `claim-race` job that races the claim
+  primitive many times per platform — the invariant it protects is only observable
+  on Windows, so it has to be raced there.
 
 ## License
 
