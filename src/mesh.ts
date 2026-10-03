@@ -422,7 +422,25 @@ export class Mesh {
     in_reply_to?: string
   }): Promise<{ to: string; messageId: string; status: SendStatus; detail: string }> {
     assertValidId(input.to)
-    const from = this.agents.get(input.context.sessionID)?.id ?? (await this.autoRegister(input.context))
+    // `send` is the model's first move, so it is where a registration failure has
+    // to be legible. The hooks in index.ts/v2.ts swallow it — structured logging
+    // is opt-in, so a swallowed failure is a silent one — and `peers`/`fetch` do
+    // not need registration, so a session that failed to register can browse the
+    // mesh and never learn. An unstructured fs error escaping here is the one
+    // place the reason can still reach it, so name it instead of passing it on.
+    let from = this.agents.get(input.context.sessionID)?.id
+    if (!from) {
+      try {
+        from = await this.autoRegister(input.context)
+      } catch (error) {
+        throw new MeshError(
+          ErrorCode.NOT_REGISTERED,
+          `this session could not be registered: ${
+            error instanceof Error ? error.message : String(error)
+          }. Fix the home directory or its permissions, then call agentpost_register.`,
+        )
+      }
+    }
     if (!from) {
       throw new MeshError(
         ErrorCode.NOT_REGISTERED,

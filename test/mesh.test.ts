@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { after, describe, it } from "node:test"
 
@@ -1260,6 +1261,40 @@ describe("mesh", () => {
       { sessionID: "ses_never_registered", directory: "/tmp/x", worktree: "" },
     )
     assert.match(result.output, /not on the mesh yet/)
+  })
+
+  it("names the reason when registration itself fails, instead of leaking a raw fs error", async () => {
+    const { config } = await twoAgents()
+    // A home that cannot exist: its parent is a regular file, so the mkdir behind
+    // registration fails for a reason the model can be told. The config has to go
+    // through `resolveConfig`, since the derived paths are computed from the home.
+    const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-blocked-")), "not-a-dir")
+    await fs.writeFile(file, "in the way")
+    const blocked = testMesh(testConfig(path.join(file, "mesh"), { pollIntervalMs: config.pollIntervalMs }))
+    cleanups.push(async () => {
+      await blocked.mesh.dispose()
+    })
+    const tools = buildTools(blocked.mesh, "http://127.0.0.1:4096")
+    const send = tools[TOOL_SEND] as unknown as {
+      execute: (args: unknown, ctx: { sessionID: string }) => Promise<{ output: string }>
+    }
+
+    await assert.rejects(
+      () =>
+        send.execute(
+          { to: "reviewer", text: "hello" },
+          { sessionID: "ses_newcomer", directory: "/tmp/x", worktree: "" },
+        ),
+      (error: MeshError) => {
+        assert.equal(error.code, "E_NOT_REGISTERED")
+        assert.match(error.message, /could not be registered/)
+        assert.match(error.message, /agentpost_register/)
+        // The reason, not just the fact: the underlying text is what tells an
+        // operator whether this is permissions, a missing parent, or a bad path.
+        assert.match(error.message, /ENOTDIR|not-a-dir/)
+        return true
+      },
+    )
   })
 
   it("reads an older processed marker without a depth as zero", async () => {
