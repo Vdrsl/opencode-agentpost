@@ -1,0 +1,42 @@
+name: publish
+
+# Triggered by the release, not by a push. Nothing reaches npm until a human
+# presses Publish on the release page, so `main` can never ship by accident.
+on:
+  release:
+    types: [published]
+
+# npm's trusted publishing: no NPM_TOKEN exists in this repository. npm mints a
+# short-lived OIDC token for this workflow, which it only issues because the
+# repository and this workflow's filename are registered as a trusted publisher
+# on the package. Set up once at npmjs.com → package → Trusted Publisher.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      # package-lock.json is gitignored, so `npm ci` cannot work; there is no
+      # lock file to install from.
+      - run: npm install
+      - name: the tag and the manifest must agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, package.json says $version" >&2
+            exit 1
+          fi
+          echo "publishing $version"
+      # The release tag is not covered by `ci` (that runs on pushes to main), so
+      # the suite runs here too. A green release is the point of the job.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish --provenance --access public
