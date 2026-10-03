@@ -10,17 +10,21 @@
  * Three v2 differences decide the shape of this adapter, and all three come
  * from the same fact: v2 owns the queue.
  *
- * 1. Delivery is one call with `delivery: "queue"`. v1 needed `session.status`
- *    to discover a busy recipient and deferred the message itself with
- *    `maxBusyDefers`; v2 removed that API and made the choice part of the
- *    request. Re-implementing busy detection here would be a second queue built
- *    on top of the first, so this module never looks at busy at all.
+ * 1. Delivery is one call, and the mode is a choice, not a detail. v1 needed
+ *    `session.status` to discover a busy recipient and deferred the message itself
+ *    with `maxBusyDefers`; v2 removed that API and made the choice part of the
+ *    request. Re-implementing busy detection here would be a second queue built on
+ *    top of the first, so this module never looks at busy at all.
+ *    `steer` reaches a session that is mid-turn; `queue` holds the message for a
+ *    later turn and preserves order. We default to `steer` because a live soak
+ *    found `queue` sitting unopened until a human released it from the TUI, and a
+ *    message nobody releases is a message that was never delivered. Set
+ *    `v2Delivery: "queue"` to opt back into the held queue.
  * 2. `session.prompt` throws typed errors instead of returning `{ error }`, so
  *    the v1 `errorTag()` dance has no meaning here.
- * 3. `accepted` therefore means "OpenCode admitted it into that session's
- *    durable queue" — the promise resolved with the admitted inbox item. It
- *    never meant the model read it, and in v2 it does not even mean the session
- *    went idle.
+ * 3. `accepted` therefore means "OpenCode admitted the message for that session" —
+ *    the promise resolved with the admitted inbox item. It never meant the model
+ *    read it, and in v2 it does not even mean the session went idle.
  *
  * The v2 types are declared locally rather than imported. `@opencode/plugin`
  * pulls in Effect and the whole v2 client, which a v1-only user must not have to
@@ -349,10 +353,10 @@ function buildV2Tools(mesh: Mesh, directory: string): V2ToolDefinition[] {
  * function is testing what actually ships, which a test calling the fake ctx
  * directly is not.
  */
-export function v2Inject(ctx: V2Context) {
+export function v2Inject(ctx: V2Context, delivery: "steer" | "queue" = "steer") {
   return async ({ sessionID, text }: { sessionID: string; text: string }): Promise<void> => {
     try {
-      await ctx.session.prompt({ sessionID, text, delivery: "queue" })
+      await ctx.session.prompt({ sessionID, text, delivery })
     } catch (error) {
       const tag = (error as { _tag?: unknown } | undefined)?._tag
       if (tag === "SessionNotFoundError") throw new SessionNotFoundError(sessionID)
@@ -369,7 +373,7 @@ export const v2Plugin = {
     const logger = createLogger()
     const directory = ctx.location.directory
 
-    const mesh = new Mesh(config, { logger, inject: v2Inject(ctx) })
+    const mesh = new Mesh(config, { logger, inject: v2Inject(ctx, config.v2Delivery) })
 
     await ctx.tool.transform((editor) => {
       for (const tool of buildV2Tools(mesh, directory)) editor.add(tool)
@@ -398,6 +402,13 @@ export const v2Plugin = {
     })
 
     // Teach the protocol in the system prompt instead of a per-repo AGENTS.md.
+    //
+    // An earlier version also peeked the inbox from this hook and told a thinking
+    // model it had mail. It cannot work: delivery already handed the message to
+    // `session.prompt` and removed it from the inbox (`deliverOne` writes the
+    // processed marker and deletes the claim), so by the next model dispatch there
+    // is nothing left here to see. Reaching a running turn is `delivery: "steer"`,
+    // not a peek at our own filesystem.
     await ctx.session.hook("context", (event) => {
       if (!config.injectSystemPrompt) return
       const selfId = mesh.selfId(event.sessionID)

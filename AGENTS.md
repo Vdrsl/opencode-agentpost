@@ -267,15 +267,22 @@ Three v2 facts shape that file, all from the same cause — v2 owns the queue:
 
 - **Never detect busy under V2.** V1 asked `session.status` and deferred the message itself
   (`maxBusyDefers`). V2 dropped that API and made the choice part of the request, so delivery
-  is `session.prompt({ delivery: "queue" })` and nothing else. A `session.status` call in
+  is `session.prompt({ delivery })` and nothing else. A `session.status` call in
   `src/v2.ts` is a regression, and `test/v2.test.ts` fails on it by design: its fake context
   throws on any method the adapter does not need.
 - **V2 throws, V1 returns `{ error }`.** The `errorTag()` helper in `src/index.ts` has no
   meaning under V2 and must not be copied there.
-- **`accepted` under V2 = admitted to that session's durable queue.** Not "the model read it",
-  not even "the session went idle". Documented in README and `src/descriptions.ts`, which is
+- **`accepted` under V2 = OpenCode admitted the message for that session.** Not "the model read
+  it", not even "the session went idle". Documented in README and `src/descriptions.ts`, which is
   the single source of both runtimes' tool text — the model reads those descriptions as
   instructions, so they must not be allowed to drift between V1 and V2.
+- **`v2Delivery` chooses `steer` (default) or `queue`, and only the reach differs.** A live soak
+  measured both: `queue` is delivered automatically when the turn ends, but never *during* it, so
+  a model thinking for minutes gets the message only afterwards, when the facts in it may be
+  stale; `steer` reaches a running turn. Nothing about durability or ordering is ours to claim
+  here — opencode owns both. Do not "fix" a slow message by adding our own deferral: that is the
+  second queue this design exists to avoid, and it is also what a `context`-hook peek cannot fix,
+  because delivery removes the message from our inbox before the next model dispatch.
 
 ## Testing notes
 

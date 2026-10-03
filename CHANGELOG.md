@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- **OpenCode 2 delivery now steers by default.** `v2Delivery` picks `steer` or `queue`, defaulting to
+  `steer`, and `AGENTPOST_V2_DELIVERY=queue` switches back without a rebuild. Measured on a live v2:
+  `queue` holds a message until the turn ends, so a model thinking for minutes sees it only
+  afterwards, when the facts in it may be stale; `steer` reaches the running turn. Two live deliveries
+  arrived mid-turn (at steps 5 and 17 of a 40-file task) and one message survived cancelling the turn.
+  A third delivery was accepted and never answered because it arrived on the recipient's last tool call
+  and the turn ended before the recipient read it — a delivery racing the end of a turn, not a lost
+  message, so `steer` is not claimed to be lossless.
+- **An earlier idea, removed in the same change:** announcing unread mail from the `context` hook before
+  each model dispatch. It cannot work — delivery already hands the message to `session.prompt` and
+  deletes it from the inbox, so by the next dispatch there is nothing left to see. The unit test drove
+  a fake context and could not show that; a live v2 did.
+
 ## v0.14.1
 - **A registration failure now says why.** `send` re-attempts `autoRegister` and, when that fails,
   answers `E_NOT_REGISTERED` with the reason and what to do about it, instead of letting a raw

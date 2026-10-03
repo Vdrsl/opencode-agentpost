@@ -47,6 +47,8 @@ export type MeshOptions = {
   metadata?: Record<string, string>
   /** Append the mesh protocol to the system prompt. Default: true. */
   injectSystemPrompt?: boolean
+  /** OpenCode 2 delivery mode. Default: `steer`. Ignored by v1. */
+  v2Delivery?: "steer" | "queue"
   heartbeatIntervalMs?: number
   staleAfterMs?: number
   /** How long a presence record with no heartbeat is reaped. */
@@ -106,6 +108,13 @@ export type MeshConfig = {
   /** Undefined means no defaults, so peers see an empty map. */
   metadata?: Record<string, string>
   injectSystemPrompt: boolean
+  /**
+   * How OpenCode 2 is asked to deliver a message. `steer` reaches a session that is
+   * mid-turn; `queue` holds the message until the session goes idle — and on v2 that
+   * hold needs a human to release it from the TUI, so `queue` is a message parked
+   * in a menu, not a delivery. V1 has no equivalent choice and ignores this.
+   */
+  v2Delivery: "steer" | "queue"
   heartbeatIntervalMs: number
   staleAfterMs: number
   presenceReapMs: number
@@ -132,6 +141,7 @@ export type MeshConfig = {
 const DEFAULTS = {
   autoRegister: true,
   injectSystemPrompt: true,
+  v2Delivery: "steer",
   heartbeatIntervalMs: 15_000,
   staleAfterMs: 60_000,
   presenceReapMs: 300_000,
@@ -215,6 +225,9 @@ export function resolveConfig(options: MeshOptions = {}): MeshConfig {
       options.injectSystemPrompt,
       DEFAULTS.injectSystemPrompt,
     ) as boolean,
+    v2Delivery: (envString("AGENTPOST_V2_DELIVERY") ?? options.v2Delivery ?? DEFAULTS.v2Delivery) as
+      | "steer"
+      | "queue",
     heartbeatIntervalMs: pick(
       envNumber("AGENTPOST_HEARTBEAT_INTERVAL_MS"),
       options.heartbeatIntervalMs,

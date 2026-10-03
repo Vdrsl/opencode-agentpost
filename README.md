@@ -88,10 +88,21 @@ no acknowledgement arrived before `ackWaitMs`; `failed` means the recipient
 reported a terminal injection error; `ambiguous` means the delivery outcome is
 not known and the caller must not blindly resend.
 
-On OpenCode 2 `accepted` means exactly one thing: the message is in the durable
-queue of that session. The recipient's OpenCode decides when to run it, and this
-plugin never asks whether the session is busy — that queue is the runtime's, not
-ours. `queued`, `failed`, `ambiguous` and `undeliverable` keep their meanings.
+On OpenCode 2 `accepted` means exactly one thing: OpenCode admitted the message for
+that session. The recipient's OpenCode decides how and when, and this plugin never
+asks whether the session is busy — that choice is the runtime's, not ours. Which
+choice it is depends on `v2Delivery` (default `steer`):
+
+- `steer` hands the message to a session that is mid-turn, so a thinking model sees
+  it between reasoning steps instead of after it finishes. Live testing showed this
+  is the only mode that reaches a busy session; with `queue` the message waits for
+  the turn to end, by which point the facts it carried may be stale.
+- `queue` holds the message for the next turn and preserves order. A held message is
+  delivered automatically once the turn ends, so it is the conservative choice.
+
+Set `v2Delivery: "queue"` in the plugin options, or `AGENTPOST_V2_DELIVERY=queue`,
+to switch. OpenCode 1 has no such choice and ignores both.
+`queued`, `failed`, `ambiguous` and `undeliverable` keep their meanings.
 
 A record is the whole of addressability. An id is accepted as long as its
 `agents/<id>.json` record exists; nothing else qualifies, not even an `inbox/<id>/`

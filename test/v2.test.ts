@@ -6,7 +6,7 @@ import { describe, it } from "node:test"
 
 import dual, { AgentPost } from "../src/index.ts"
 import { v2Inject, v2Plugin, V2_PLUGIN_ID } from "../src/v2.ts"
-import { TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "../src/config.ts"
+import { resolveConfig, TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } from "../src/config.ts"
 
 /**
  * A fake v2 context. Deliberately narrow: it implements only what `src/v2.ts`
@@ -15,7 +15,7 @@ import { TOOL_DELIVERIES, TOOL_FETCH, TOOL_PEERS, TOOL_REGISTER, TOOL_SEND } fro
  * reached for `session.status` again to decide busyness, the proxy below throws
  * on `get` rather than quietly answering.
  */
-function fakeContext(home: string, calls: string[]) {
+function fakeContext(home: string, calls: string[], options: Record<string, unknown> = {}) {
   const added: { name: string; description: string; input: Record<string, unknown>; output?: { type: string } }[] = []
   const hooks = new Map<string, (event: never) => unknown>()
   const prompts: unknown[] = []
@@ -50,7 +50,7 @@ function fakeContext(home: string, calls: string[]) {
     prompts,
     ctx: {
       location: { directory: "I:\\test\\opencode-agentpost" },
-      options: { home },
+      options: { home, ...options },
       tool: {
         transform(callback: (editor: { add(tool: { name: string; description: string; input: Record<string, unknown>; output?: { type: string } }): void }) => void) {
           callback({ add: (tool) => added.push(tool) })
@@ -84,7 +84,7 @@ describe("OpenCode V2 surface", () => {
 
   it("registers all five tools with JSON Schema inputs", async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2tools-"))
-    t.after(() => fs.rm(home, { recursive: true, force: true }))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const fake = fakeContext(home, [])
     const cleanup = await v2Plugin.setup(fake.ctx as never)
     t.after(() => cleanup())
@@ -102,25 +102,25 @@ describe("OpenCode V2 surface", () => {
     }
   })
 
-  it("delivers with delivery:queue and never asks whether the session is busy", async (t) => {
-    // The whole point of the v2 adapter: the queue belongs to opencode. Driving
+  it("delivers in one call and never asks whether the session is busy", async (t) => {
+    // The whole point of the v2 adapter: the choice belongs to opencode. Driving
     // `v2Inject` itself means the fake only ever sees `session.prompt` — if the
     // adapter reached for `session.status` or `session.get` to decide busyness,
     // the proxy throws instead of answering.
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2deliver-"))
-    t.after(() => fs.rm(home, { recursive: true, force: true }))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const calls: string[] = []
     const fake = fakeContext(home, calls)
 
     await v2Inject(fake.ctx as never)({ sessionID: "ses_probe", text: "hello" })
 
     assert.deepEqual(calls, ["prompt"])
-    assert.deepEqual(fake.prompts, [{ sessionID: "ses_probe", text: "hello", delivery: "queue" }])
+    assert.deepEqual(fake.prompts, [{ sessionID: "ses_probe", text: "hello", delivery: "steer" }])
   })
 
   it("reports a missing v2 session as SessionNotFoundError", async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2missing-"))
-    t.after(() => fs.rm(home, { recursive: true, force: true }))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const calls: string[] = []
     const fake = fakeContext(home, [])
     const ctx = {
@@ -137,7 +137,7 @@ describe("OpenCode V2 surface", () => {
 
   it("registers the prompt and context hooks the v1 path used to carry", async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2hooks-"))
-    t.after(() => fs.rm(home, { recursive: true, force: true }))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const fake = fakeContext(home, [])
     const cleanup = await v2Plugin.setup(fake.ctx as never)
     t.after(() => cleanup())
@@ -149,10 +149,47 @@ describe("OpenCode V2 surface", () => {
 
   it("returns to the caller a cleanup that stops the event stream", async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2cleanup-"))
-    t.after(() => fs.rm(home, { recursive: true, force: true }))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
     const fake = fakeContext(home, [])
     const cleanup = await v2Plugin.setup(fake.ctx as never)
     await cleanup()
     // Disposing must not throw even though the fake stream never yielded.
+  })
+
+  it("asks OpenCode to steer by default and honours the queue opt-in", async (t) => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "agentpost-v2steer-"))
+    t.after(() => fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+    const fake = fakeContext(home, [])
+    const cleanup = await v2Plugin.setup(fake.ctx as never)
+    t.after(() => cleanup())
+    await v2Inject(fake.ctx as never, "steer")({ sessionID: "ses_a", text: "hi" })
+    assert.equal(fake.prompts.at(-1) && (fake.prompts.at(-1) as { delivery: string }).delivery, "steer")
+
+    // And the adapter itself picks up config, so an operator can go back to the
+    // held queue without a rebuild.
+    const queued = fakeContext(home, [], { v2Delivery: "queue" })
+    const queuedCleanup = await v2Plugin.setup(queued.ctx as never)
+    t.after(() => queuedCleanup())
+    assert.deepEqual(
+      await v2Inject(queued.ctx as never, resolveConfig({ v2Delivery: "queue" }).v2Delivery)({
+        sessionID: "ses_b",
+        text: "hi",
+      }),
+      undefined,
+    )
+    assert.equal(
+      queued.prompts.at(-1) && (queued.prompts.at(-1) as { delivery: string }).delivery,
+      "queue",
+    )
+  })
+
+  it("defaults to steer because a held queue is not a delivery", (t) => {
+    assert.equal(resolveConfig({}).v2Delivery, "steer")
+    // The env is the lever an operator has without a rebuild, so prove it wins.
+    t.after(() => {
+      delete process.env["AGENTPOST_V2_DELIVERY"]
+    })
+    process.env["AGENTPOST_V2_DELIVERY"] = "queue"
+    assert.equal(resolveConfig({}).v2Delivery, "queue")
   })
 })
