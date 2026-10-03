@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.14.1
+- **A registration failure now says why.** `send` re-attempts `autoRegister` and, when that fails,
+  answers `E_NOT_REGISTERED` with the reason and what to do about it, instead of letting a raw
+  filesystem error escape. It matters because the hooks that register a session log the failure at a
+  level that is off by default, and `agentpost_peers`, `agentpost_fetch` and `agentpost_deliveries`
+  do not require registration: a session that could not register could browse the mesh indefinitely
+  without learning it was not on it. `send` is the model's first move, so it is the one place the
+  reason can still reach the model.
+- Publish to npm from the release through **trusted publishing**
+  (`.github/workflows/publish.yml`): no `NPM_TOKEN` in the repository, `--provenance` on the tarball,
+  and the tag and `package.json` must agree before anything is published. Triggered by publishing a
+  release, not by a push to `main`.
+- Keep the rejected-by-design reasoning in `AGENTS.md` and drop the stale Phase 4 backlog file. The
+  file-lease and metrics rejections are worth keeping precisely because they were expensive to reach:
+  the lease keying trap is the same one that already cost us the address.
+- Correct two claims in `AGENTS.md` that had drifted from the code: it said no CI existed, and that
+  inheritance carried `description`/`metadata` along with the address — which 0.14.0 removed, because a
+  copied description is a lie that peers read as fact.
+
 ## v0.14.0 — One package, OpenCode 1 and 2
 - **Rename to `@vdrsl/opencode-agentpost`.** The unscoped `opencode-agentmesh` belongs to the original author, and a fork carrying his name one-for-one is not a fork anyone would publish. The package name, the tool prefix (`agentpost_*`), the `AGENTPOST_*` env vars, the home directory, the exported symbol and the skill folder all moved together; historical entries in this file keep the names they had at the time, and `README.md` keeps the credit to the original author.
 - **The same package now runs on OpenCode 2.** The default export carries both entrypoints: V1 reads `server()` and V2 reads `setup()`, which is the dual form OpenCode documents. That needs 1.18.29 or newer on the V1 side — the first release accepting an object entrypoint, and older than any release this package was published to. Install under `plugin` on V1 and `plugins` on V2; nothing else differs.

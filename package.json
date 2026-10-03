@@ -1,6 +1,6 @@
 {
   "name": "@vdrsl/opencode-agentpost",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Peer-to-peer messaging between opencode agents running in different sessions, directories and servers",
   "keywords": ["opencode", "opencode-plugin", "agent", "multi-agent", "mail", "messaging"],
   "license": "MIT",
