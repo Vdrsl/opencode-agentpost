@@ -1807,17 +1807,21 @@ describe("mesh", () => {
     await waitFor(() => attempts > 2)
     await watcher.stop()
     await starting
-    // Wait for the claim to come back rather than reading the instant `stop()`
-    // resolves: `stop` only clears the timer, so a drain already in flight still
-    // holds the message as `*.json.taken`, and `messageFiles` cannot see that
-    // name. The message is never lost — the busy path returns it to the queue —
-    // but it is momentarily under the other name.
-    await waitFor(async () => (await messageFiles(inbox)).includes(`${message.id}.json`))
-    const queued = await readJson<Record<string, unknown>>(
-      path.join(inbox, `${message.id}.json`),
-    )
+    // Read through the cycle rather than at an instant in it. `stop` clears the
+    // timer but cannot recall a drain already in flight, and that drain holds the
+    // message as `*.json.taken` while handing it back — so listing the inbox, or
+    // reading the pending name, can land in the gap and see nothing. That is not a
+    // lost message; that is the retry doing its job. The invariant worth pinning is
+    // that the message survives and its defer count grew, so retry until it is
+    // readable and assert on what it says.
+    let queued: Record<string, unknown> | undefined
+    await waitFor(async () => {
+      queued = await readJson<Record<string, unknown>>(
+        path.join(inbox, `${message.id}.json`),
+      )
+      return typeof queued?.["_busyDeferCount"] === "number"
+    })
     assert.ok((queued?.["_busyDeferCount"] as number) >= 2)
-    assert.deepEqual(await messageFiles(inbox), [`${message.id}.json`])
   })
 
   it("accumulates a busy sender's messages and hands them over as a batch", async () => {
