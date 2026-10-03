@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.15.0
 - **OpenCode 2 delivery now steers by default.** `v2Delivery` picks `steer` or `queue`, defaulting to
   `steer`, and `AGENTPOST_V2_DELIVERY=queue` switches back without a rebuild. Measured on a live v2:
   `queue` holds a message until the turn ends, so a model thinking for minutes sees it only
