@@ -1,7 +1,5 @@
 # @vdrsl/opencode-agentpost
 
-[![license](https://img.shields.io/npm/l/@vdrsl/opencode-agentpost.svg)](https://github.com/Vdrsl/opencode-agentpost/blob/main/LICENSE)
-
 Agents that run in separate [opencode](https://opencode.ai) sessions can find each
 other and talk, as long as those sessions can see one shared directory. There is
 nothing to launch: no daemon, no port, no broker to keep alive. Each session
